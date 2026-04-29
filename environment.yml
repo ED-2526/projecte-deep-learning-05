@@ -1,20 +1,17 @@
-name: xnap-example
+name: xnap-segmentation
 channels:
-- pytorch
-- defaults
+  - pytorch
+  - defaults
 dependencies:
-- python==3.8
-- pip
-- pip:
-  - torch
-  - torchvision
-  - torchaudio
-  - onnx
-  - wandb
-  - onnxruntime
-  - ipykernel
-- numpy
-- tqdm
-- tensorboard
-- protobuf
-
+  - python=3.10
+  - pip
+  - numpy
+  - tqdm
+  - matplotlib
+  - pillow
+  - pip:
+      - torch
+      - torchvision
+      - wandb
+      - ipykernel
+      - tensorboard
