@@ -7,6 +7,11 @@ from torch.utils.data import Dataset
 
 
 class SegmentationDataset(Dataset):
+    """
+    EXPLICACIÓ SIMPLE: Dataset personalitzat que carrega imatges i máscaras de segmentació.
+    Les imatges han de ser .jpg i les máscaras .png al mateix ordre alfabètic.
+    En cada accés, retorna una imatge i la seva màscara corresponent transformades.
+    """
     def __init__(self, img_dir, mask_dir, transform=None):
         self.img_paths  = sorted(glob(os.path.join(img_dir,  "*.jpg")))
         self.mask_paths = sorted(glob(os.path.join(mask_dir, "*.png")))

@@ -5,6 +5,12 @@ import torchvision.models as models
 
 
 class Encoder(nn.Module):
+    """
+    EXPLICACIÓ SIMPLE: L'Encoder és la primera meitat de U-Net que comprimeix la imatge.
+    Usa ResNet50 preentrenat en ImageNet. Extreu características en 5 nivells (layer0 a layer4).
+    A més que la imatge es fa més petita, té més canals (més informació semàntica).
+    Retorna el bottleneck (part més comprimida) i les característiques intermedies per a skip connections.
+    """
     def __init__(self, pretrained=True):
         super().__init__()
         weights = models.ResNet50_Weights.IMAGENET1K_V2 if pretrained else None
@@ -25,6 +31,13 @@ class Encoder(nn.Module):
 
 
 class DecoderBlock(nn.Module):
+    """
+    EXPLICACIÓ SIMPLE: Un bloc del Decoder (la segona meitat de U-Net) que restaura la resolució.
+    Fa dos coses:
+    1. Fa la imatge més gran (upsampling) amb ConvTranspose2d
+    2. Combina amb característiques de l'Encoder (skip connection) i aplica convolucions
+    Això preserva detalls fets mentre es reconstrueix la imatge original.
+    """
     def __init__(self, in_ch, skip_ch, out_ch):
         super().__init__()
         self.up = nn.ConvTranspose2d(in_ch, out_ch, kernel_size=2, stride=2)
@@ -45,6 +58,13 @@ class DecoderBlock(nn.Module):
 
 
 class UNet(nn.Module):
+    """
+    EXPLICACIÓ SIMPLE: La xarxa UNet complet que fa segmentació semàntica.
+    Combina l'Encoder (comprimeix) i el Decoder (restaura) amb skip connections.
+    Entrada: imatge RGB de 256x256
+    Sortida: màscara de classes per a cada píxel (256x256xnum_classes)
+    La forma de U ve de que comprimeix fins al centre, després restaura la resolució.
+    """
     def __init__(self, num_classes, pretrained=True):
         super().__init__()
         self.encoder = Encoder(pretrained=pretrained)

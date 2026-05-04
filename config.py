@@ -1,4 +1,20 @@
+"""
+EXPLICACIÓ SIMPLE: Configuració centralitzada del projecte.
+
+Aquí es defineixen tots els hiperparàmetres (números que controlen com treballa el model).
+En lloc de dispersar aquests valors pel codi, es concentren aquí per fàcil modificació.
+Canvia els valors aquí si vols ajustar l'entrenament sense tocar el codi principal.
+"""
+
 class Config:
+    """
+    EXPLICACIÓ SIMPLE: Classe amb tots els paràmetres del model i entrenament.
+    - DATASET: Quines dades usar (COCO o VOC2012)
+    - BATCH_SIZE: Quantes imatges procesar juntes
+    - LR (Learning Rate): Velocitat d'aprenentatge (més alt = més ràpid però menys estable)
+    - EPOCHS: Quantes vegades entrenar amb totes les dades
+    - CE_WEIGHT, DICE_WEIGHT: Com pesar les dos funcions d'error
+    """
     # Datos — el enunciado del proyecto pide COCO 256x256.
     # Se deja COCO por defecto; cambiar a "VOC2012"/21 si decides empezar por VOC.
     DATASET     = "VOC"

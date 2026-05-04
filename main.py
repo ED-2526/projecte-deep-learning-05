@@ -11,14 +11,19 @@ from torch.utils.data import DataLoader, Subset
 
 from classes import get_classes
 from config import Config
-from engine import train_one_epoch, validate
+from engine import entrenar_una_epoca, validar
 from losses import SegmentationLoss
 from metrics import SegmentationMetrics
 from models.unet import UNet
 from transforms import PairedTransform
 
 
-def set_seed(seed: int) -> None:
+def establir_llavor(seed: int) -> None:
+    """
+    EXPLICACIÓ SIMPLE: Fixa el número aleatori inicial (llavor) per a la reproducibilitat.
+    Fent que tots els algoritmes aleatoris generin la mateixa sequència cada vegada.
+    Útil per a que els resultats siguin iguals cada vegada que executem el codi.
+    """
     random.seed(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)
@@ -26,6 +31,19 @@ def set_seed(seed: int) -> None:
         torch.cuda.manual_seed_all(seed)
 
 
+<<<<<<< HEAD
+def construir_voc(root: str, image_set: str, img_size: int):
+    """
+    EXPLICACIÓ SIMPLE: Carrega el dataset VOC (imatges i màscares).
+    Si no existeix, el descarrega automàticament. Aplica transformacions per adaptar
+    les imatges al tamaño correcte i fer augmentació de dades si és entrenament.
+    """
+    transform = PairedTransform(img_size=img_size, train=(image_set == "train"))
+    return datasets.VOCSegmentation(
+        root=root, year="2012", image_set=image_set, download=True,
+        transforms=transform,
+    )
+=======
 def build_dataset(root: str, split: str, cfg: Config):
     """Factory: devuelve el dataset correcto según cfg.DATASET."""
     transform = PairedTransform(img_size=cfg.IMG_SIZE, train=(split == "train"))
@@ -43,9 +61,16 @@ def build_dataset(root: str, split: str, cfg: Config):
         return CocoSegmentation(root=root, split=split, transforms=transform)
 
     raise ValueError(f"DATASET desconocido en config: {cfg.DATASET!r}. Usa 'VOC' o 'COCO'.")
+>>>>>>> 7ef54e90e48dd391bd73a11764d25d4ec3dc800e
 
 
-def build_optimizer(model: UNet, cfg: Config) -> torch.optim.Optimizer:
+def construir_optimitzador(model: UNet, cfg: Config) -> torch.optim.Optimizer:
+    """
+    EXPLICACIÓ SIMPLE: Crea l'optimitzador que actualitza els pesos del model.
+    Usa velocitats d'aprenentatge (learning rates) diferents per a l'encoder i el decoder:
+    - Encoder: velocitat baixa (no trencar els pesos preentrenats)
+    - Decoder: velocitat alta (aprendre des de zero)
+    """
     encoder_params = list(model.encoder.parameters())
     decoder_params = [p for n, p in model.named_parameters() if not n.startswith("encoder.")]
     return torch.optim.AdamW(
@@ -57,19 +82,45 @@ def build_optimizer(model: UNet, cfg: Config) -> torch.optim.Optimizer:
     )
 
 
+<<<<<<< HEAD
+def registre_iou_per_classe(iou_per_classe, prefix="val_iou"):
+    """
+    EXPLICACIÓ SIMPLE: Crea un diccionari amb les puntuacions d'IoU (precisió) per a cada classe.
+    Útil per a veure quines classes el model aprèn bé i quines no.
+    El diccionari es veu bé en el sistema de logging Wandb.
+    """
+    return {f"{prefix}/{name}": float(iou)
+            for name, iou in zip(VOC_CLASSES, iou_per_classe)}
+=======
 def per_class_iou_log(iou_per_class, cfg: Config, prefix="val_iou"):
     classes = get_classes(cfg.DATASET)
     return {f"{prefix}/{name}": float(iou) for name, iou in zip(classes, iou_per_class)}
+>>>>>>> 7ef54e90e48dd391bd73a11764d25d4ec3dc800e
 
 
-def main(args: argparse.Namespace) -> None:
+def principal(args: argparse.Namespace) -> None:
+    """
+    EXPLICACIÓ SIMPLE: Aquesta és la funció principal. Organitza tot el procés:
+    1. Carrega les dades
+    2. Crea el model
+    3. Entrena el model durant varis epochs
+    4. Guarda el millor model
+    5. Mostra resultats i gràfiques
+    """
     cfg = Config()
-    set_seed(cfg.SEED)
+    establir_llavor(cfg.SEED)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"[main] device = {device}  |  dataset = {cfg.DATASET}  |  num_classes = {cfg.NUM_CLASSES}")
 
+<<<<<<< HEAD
+    # --- data (VOC2012 baseline) ---
+    num_classes = 21
+    train_ds = construir_voc(args.data_root, "train", cfg.IMG_SIZE)
+    val_ds   = construir_voc(args.data_root, "val",   cfg.IMG_SIZE)
+=======
     train_ds = build_dataset(args.data_root, "train", cfg)
     val_ds   = build_dataset(args.data_root, "val",   cfg)
+>>>>>>> 7ef54e90e48dd391bd73a11764d25d4ec3dc800e
 
     if args.overfit > 0:
         idx = list(range(args.overfit))
@@ -92,7 +143,7 @@ def main(args: argparse.Namespace) -> None:
         ignore_index=cfg.IGNORE_INDEX,
     )
     epochs = args.epochs if args.epochs is not None else cfg.EPOCHS
-    optimizer = build_optimizer(model, cfg)
+    optimizer = construir_optimitzador(model, cfg)
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=epochs)
     metrics   = SegmentationMetrics(num_classes=cfg.NUM_CLASSES, ignore_index=cfg.IGNORE_INDEX)
 
@@ -112,8 +163,8 @@ def main(args: argparse.Namespace) -> None:
     best_miou = 0.0
 
     for epoch in range(epochs):
-        train_loss = train_one_epoch(model, train_loader, optimizer, criterion, device, epoch=epoch)
-        val_loss, val_metrics = validate(model, val_loader, criterion, metrics, device, epoch=epoch)
+        train_loss = entrenar_una_epoca(model, train_loader, optimizer, criterion, device, epoch=epoch)
+        val_loss, val_metrics = validar(model, val_loader, criterion, metrics, device, epoch=epoch)
         scheduler.step()
 
         log = {
@@ -124,7 +175,11 @@ def main(args: argparse.Namespace) -> None:
             "lr_encoder":  optimizer.param_groups[0]["lr"],
             "lr_decoder":  optimizer.param_groups[1]["lr"],
         }
+<<<<<<< HEAD
+        log.update(registre_iou_per_classe(val_metrics["IoU_per_class"]))
+=======
         log.update(per_class_iou_log(val_metrics["IoU_per_class"], cfg))
+>>>>>>> 7ef54e90e48dd391bd73a11764d25d4ec3dc800e
 
         main_keys = ("epoch", "train_loss", "val_loss", "val_mIoU")
         line = " | ".join(
@@ -155,8 +210,21 @@ def main(args: argparse.Namespace) -> None:
         wandb.finish()
 
 
+<<<<<<< HEAD
+def analitzar_arguments() -> argparse.Namespace:
+    """
+    EXPLICACIÓ SIMPLE: Llegeix els arguments de la línia de comandes.
+    Els arguments permeten controlar com s'executa el programa:
+    - data-root: on guardar/llegir les dades
+    - epochs: quants epochs entrenar
+    - overfit: mode de prova (entrenar amb pocs datos)
+    - wandb: activar o desactivar el logging
+    """
+    p = argparse.ArgumentParser(description="U-Net segmentation training (VOC2012 baseline)")
+=======
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="U-Net segmentation training")
+>>>>>>> 7ef54e90e48dd391bd73a11764d25d4ec3dc800e
     p.add_argument("--data-root", type=str, default="./data",
                    help="Carpeta donde descargar/leer el dataset")
     p.add_argument("--epochs", type=int, default=None,
@@ -169,4 +237,4 @@ def parse_args() -> argparse.Namespace:
 
 
 if __name__ == "__main__":
-    main(parse_args())
+    principal(analitzar_arguments())

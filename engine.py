@@ -2,7 +2,16 @@ import torch
 from tqdm.auto import tqdm
 
 
-def train_one_epoch(model, loader, optimizer, criterion, device, epoch=None):
+def entrenar_una_epoca(model, loader, optimizer, criterion, device, epoch=None):
+    """
+    EXPLICACIÓ SIMPLE: Entrena el model durant un epoch (una passada per totes les dades).
+    Per a cada batch:
+    1. Passa imatges pel model
+    2. Calcula l'error (pèrdua)
+    3. Actualitza els pesos del model
+    4. Mostra la pèrdua actual
+    Retorna la pèrdua promitjada de l'epoch.
+    """
     model.train()
     total_loss = 0.0
     desc = f"train ep{epoch:03d}" if epoch is not None else "train"
@@ -25,9 +34,17 @@ def train_one_epoch(model, loader, optimizer, criterion, device, epoch=None):
 
 
 @torch.no_grad()
-def validate(model, loader, criterion, metrics, device, epoch=None):
+def validar(model, loader, criterion, metrics, device, epoch=None):
+    """
+    EXPLICACIÓ SIMPLE: Avalua el model en dades de validació (sense actualitzar pesos).
+    Per a cada batch:
+    1. Passa imatges pel model
+    2. Calcula l'error
+    3. Actualitza les mètriques de precisió
+    Retorna la pèrdua promitjada i les mètriques calculades (mIoU, IoU per classe).
+    """
     model.eval()
-    metrics.reset()
+    metrics.reinicialitzar()
     total_loss = 0.0
     desc = f"val   ep{epoch:03d}" if epoch is not None else "val"
     pbar = tqdm(loader, desc=desc, leave=False)
@@ -38,7 +55,7 @@ def validate(model, loader, criterion, metrics, device, epoch=None):
 
         preds = model(images)
         total_loss += criterion(preds, masks).item()
-        metrics.update(preds, masks)
+        metrics.actualitzar(preds, masks)
         pbar.set_postfix(loss=f"{total_loss/(pbar.n+1):.4f}")
 
-    return total_loss / max(len(loader), 1), metrics.compute()
+    return total_loss / max(len(loader), 1), metrics.calcular()
