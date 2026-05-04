@@ -15,20 +15,20 @@ import numpy as np
 import torch
 from torch.utils.data import DataLoader
 
-from classes import VOC_CLASSES, VOC_COLORMAP
+from classes import get_classes, get_colormap
 from config import Config
 from engine import validate
 from losses import SegmentationLoss
-from main import build_voc
+from main import build_dataset
 from metrics import SegmentationMetrics
 from models.unet import UNet
 from transforms import PairedTransform
 
 
-def colorize_mask(mask: np.ndarray) -> np.ndarray:
+def colorize_mask(mask: np.ndarray, colormap: list) -> np.ndarray:
     """Convierte una máscara (H, W) de índices a una imagen RGB (H, W, 3)."""
     rgb = np.zeros((*mask.shape, 3), dtype=np.uint8)
-    for cls_idx, color in enumerate(VOC_COLORMAP):
+    for cls_idx, color in enumerate(colormap):
         rgb[mask == cls_idx] = color
     rgb[mask == 255] = (255, 255, 255)   # ignore_index → blanco
     return rgb
@@ -44,7 +44,7 @@ def denormalize(image_t: torch.Tensor) -> np.ndarray:
 
 
 @torch.no_grad()
-def make_figure(model, dataset, device, num_samples, out_path):
+def make_figure(model, dataset, device, num_samples, colormap, out_path):
     fig, axes = plt.subplots(num_samples, 3, figsize=(9, 3 * num_samples))
     if num_samples == 1:
         axes = axes[None, :]
@@ -56,9 +56,9 @@ def make_figure(model, dataset, device, num_samples, out_path):
 
         axes[i, 0].imshow(denormalize(image))
         axes[i, 0].set_title("input" if i == 0 else "")
-        axes[i, 1].imshow(colorize_mask(mask.numpy()))
+        axes[i, 1].imshow(colorize_mask(mask.numpy(), colormap))
         axes[i, 1].set_title("ground truth" if i == 0 else "")
-        axes[i, 2].imshow(colorize_mask(pred))
+        axes[i, 2].imshow(colorize_mask(pred, colormap))
         axes[i, 2].set_title("prediction" if i == 0 else "")
         for ax in axes[i]:
             ax.axis("off")
@@ -80,41 +80,42 @@ def load_checkpoint(model, ckpt_path):
 def main(args):
     cfg = Config()
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    num_classes = 21
+    print(f"[evaluate] dataset = {cfg.DATASET}  |  num_classes = {cfg.NUM_CLASSES}")
 
-    val_ds = build_voc(args.data_root, "val", cfg.IMG_SIZE)
+    val_ds     = build_dataset(args.data_root, "val", cfg)
     val_loader = DataLoader(val_ds, batch_size=cfg.BATCH_SIZE,
                             shuffle=False, num_workers=cfg.NUM_WORKERS, pin_memory=True)
 
-    model = UNet(num_classes=num_classes, pretrained=False).to(device)
+    model = UNet(num_classes=cfg.NUM_CLASSES, pretrained=False).to(device)
     load_checkpoint(model, args.ckpt)
 
-    # --- métricas cuantitativas ---
     criterion = SegmentationLoss(cfg.CE_WEIGHT, cfg.DICE_WEIGHT, cfg.IGNORE_INDEX)
-    metrics   = SegmentationMetrics(num_classes=num_classes, ignore_index=cfg.IGNORE_INDEX)
+    metrics   = SegmentationMetrics(num_classes=cfg.NUM_CLASSES, ignore_index=cfg.IGNORE_INDEX)
     val_loss, val_metrics = validate(model, val_loader, criterion, metrics, device)
 
-    print(f"\n=== VOC2012 val results ===")
+    classes  = get_classes(cfg.DATASET)
+    colormap = get_colormap(cfg.DATASET)
+
+    print(f"\n=== {cfg.DATASET} val results ===")
     print(f"val_loss : {val_loss:.4f}")
     print(f"mIoU     : {val_metrics['mIoU']:.4f}")
     print(f"\nIoU per class:")
     iou = val_metrics["IoU_per_class"]
-    for name, v in sorted(zip(VOC_CLASSES, iou), key=lambda x: x[1]):
-        print(f"  {name:<14} {v:.4f}")
+    for name, v in sorted(zip(classes, iou), key=lambda x: x[1]):
+        print(f"  {name:<20} {v:.4f}")
 
-    # --- figura cualitativa ---
     if not args.no_figure:
-        out_dir = Path("docs"); out_dir.mkdir(exist_ok=True)
+        out_dir  = Path("docs"); out_dir.mkdir(exist_ok=True)
         out_path = out_dir / "qualitative_results.png"
-        make_figure(model, val_ds, device, args.num_samples, out_path)
+        make_figure(model, val_ds, device, args.num_samples, colormap, out_path)
 
 
 def parse_args():
     p = argparse.ArgumentParser(description="Evaluate a trained U-Net checkpoint")
-    p.add_argument("--ckpt", type=str, default="checkpoints/best.pt")
-    p.add_argument("--data-root", type=str, default="./data")
+    p.add_argument("--ckpt",        type=str, default="checkpoints/best.pt")
+    p.add_argument("--data-root",   type=str, default="./data")
     p.add_argument("--num-samples", type=int, default=8)
-    p.add_argument("--no-figure", action="store_true",
+    p.add_argument("--no-figure",   action="store_true",
                    help="Skip the qualitative figure (just print metrics)")
     return p.parse_args()
 

@@ -1,8 +1,11 @@
 class Config:
     # Datos — el enunciado del proyecto pide COCO 256x256.
     # Se deja COCO por defecto; cambiar a "VOC2012"/21 si decides empezar por VOC.
-    DATASET     = "COCO"
-    NUM_CLASSES = 91          # COCO stuff+things; ajusta según el subset que uses
+    DATASET     = "VOC"
+    NUM_CLASSES = 21     
+    
+    # DATASET     = "COCO"
+    # NUM_CLASSES = 91          # COCO stuff+things; ajusta según el subset que uses
     IMG_SIZE    = 256
     BATCH_SIZE  = 8
     NUM_WORKERS = 4
