@@ -9,13 +9,14 @@ import numpy as np
 import torch
 from torch.utils.data import DataLoader, Subset
 
-from classes import get_classes
+from classes import VOC_CLASSES
 from config import Config
 from engine import entrenar_una_epoca, validar
 from losses import SegmentationLoss
 from metrics import SegmentationMetrics
 from models.unet import UNet
 from transforms import PairedTransform
+from torchvision import datasets
 
 
 def establir_llavor(seed: int) -> None:
@@ -31,7 +32,6 @@ def establir_llavor(seed: int) -> None:
         torch.cuda.manual_seed_all(seed)
 
 
-<<<<<<< HEAD
 def construir_voc(root: str, image_set: str, img_size: int):
     """
     EXPLICACIÓ SIMPLE: Carrega el dataset VOC (imatges i màscares).
@@ -43,25 +43,6 @@ def construir_voc(root: str, image_set: str, img_size: int):
         root=root, year="2012", image_set=image_set, download=True,
         transforms=transform,
     )
-=======
-def build_dataset(root: str, split: str, cfg: Config):
-    """Factory: devuelve el dataset correcto según cfg.DATASET."""
-    transform = PairedTransform(img_size=cfg.IMG_SIZE, train=(split == "train"))
-    dataset_name = cfg.DATASET.upper()
-
-    if dataset_name in ("VOC", "VOC2012"):
-        from torchvision import datasets
-        return datasets.VOCSegmentation(
-            root=root, year="2012", image_set=split, download=True,
-            transforms=transform,
-        )
-
-    if dataset_name == "COCO":
-        from dataset import CocoSegmentation
-        return CocoSegmentation(root=root, split=split, transforms=transform)
-
-    raise ValueError(f"DATASET desconocido en config: {cfg.DATASET!r}. Usa 'VOC' o 'COCO'.")
->>>>>>> 7ef54e90e48dd391bd73a11764d25d4ec3dc800e
 
 
 def construir_optimitzador(model: UNet, cfg: Config) -> torch.optim.Optimizer:
@@ -82,7 +63,6 @@ def construir_optimitzador(model: UNet, cfg: Config) -> torch.optim.Optimizer:
     )
 
 
-<<<<<<< HEAD
 def registre_iou_per_classe(iou_per_classe, prefix="val_iou"):
     """
     EXPLICACIÓ SIMPLE: Crea un diccionari amb les puntuacions d'IoU (precisió) per a cada classe.
@@ -91,11 +71,6 @@ def registre_iou_per_classe(iou_per_classe, prefix="val_iou"):
     """
     return {f"{prefix}/{name}": float(iou)
             for name, iou in zip(VOC_CLASSES, iou_per_classe)}
-=======
-def per_class_iou_log(iou_per_class, cfg: Config, prefix="val_iou"):
-    classes = get_classes(cfg.DATASET)
-    return {f"{prefix}/{name}": float(iou) for name, iou in zip(classes, iou_per_class)}
->>>>>>> 7ef54e90e48dd391bd73a11764d25d4ec3dc800e
 
 
 def principal(args: argparse.Namespace) -> None:
@@ -112,15 +87,10 @@ def principal(args: argparse.Namespace) -> None:
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"[main] device = {device}  |  dataset = {cfg.DATASET}  |  num_classes = {cfg.NUM_CLASSES}")
 
-<<<<<<< HEAD
     # --- data (VOC2012 baseline) ---
     num_classes = 21
     train_ds = construir_voc(args.data_root, "train", cfg.IMG_SIZE)
     val_ds   = construir_voc(args.data_root, "val",   cfg.IMG_SIZE)
-=======
-    train_ds = build_dataset(args.data_root, "train", cfg)
-    val_ds   = build_dataset(args.data_root, "val",   cfg)
->>>>>>> 7ef54e90e48dd391bd73a11764d25d4ec3dc800e
 
     if args.overfit > 0:
         idx = list(range(args.overfit))
@@ -175,11 +145,7 @@ def principal(args: argparse.Namespace) -> None:
             "lr_encoder":  optimizer.param_groups[0]["lr"],
             "lr_decoder":  optimizer.param_groups[1]["lr"],
         }
-<<<<<<< HEAD
         log.update(registre_iou_per_classe(val_metrics["IoU_per_class"]))
-=======
-        log.update(per_class_iou_log(val_metrics["IoU_per_class"], cfg))
->>>>>>> 7ef54e90e48dd391bd73a11764d25d4ec3dc800e
 
         main_keys = ("epoch", "train_loss", "val_loss", "val_mIoU")
         line = " | ".join(
@@ -210,7 +176,6 @@ def principal(args: argparse.Namespace) -> None:
         wandb.finish()
 
 
-<<<<<<< HEAD
 def analitzar_arguments() -> argparse.Namespace:
     """
     EXPLICACIÓ SIMPLE: Llegeix els arguments de la línia de comandes.
@@ -221,10 +186,6 @@ def analitzar_arguments() -> argparse.Namespace:
     - wandb: activar o desactivar el logging
     """
     p = argparse.ArgumentParser(description="U-Net segmentation training (VOC2012 baseline)")
-=======
-def parse_args() -> argparse.Namespace:
-    p = argparse.ArgumentParser(description="U-Net segmentation training")
->>>>>>> 7ef54e90e48dd391bd73a11764d25d4ec3dc800e
     p.add_argument("--data-root", type=str, default="./data",
                    help="Carpeta donde descargar/leer el dataset")
     p.add_argument("--epochs", type=int, default=None,

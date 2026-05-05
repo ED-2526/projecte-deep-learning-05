@@ -1,4 +1,3 @@
-<<<<<<< HEAD
 """
 EXPLICACIÓ SIMPLE: Definicions de classes i colors del dataset VOC2012.
 
@@ -7,9 +6,6 @@ VOC_COLORMAP: Un color RGB diferent per a cada classe, per coloritzar visualment
 
 Això facilita veure quina classe va predir el model per a cada píxel.
 """
-=======
-"""Nombres de clase y paletas de color para los datasets soportados."""
->>>>>>> 7ef54e90e48dd391bd73a11764d25d4ec3dc800e
 
 # --- VOC2012 ---
 VOC_CLASSES = (

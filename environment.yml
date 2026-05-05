@@ -1,17 +1,16 @@
-name: xnap-segmentation
+name: grupo-5
 channels:
-  - pytorch
   - defaults
 dependencies:
   - python=3.10
-  - pip
   - numpy
   - tqdm
   - matplotlib
   - pillow
+  - pip
   - pip:
-      - torch
-      - torchvision
+      - torch==2.5.1 --index-url https://download.pytorch.org/whl/cu124
+      - torchvision==0.20.1 --index-url https://download.pytorch.org/whl/cu124
       - wandb
       - ipykernel
       - tensorboard
