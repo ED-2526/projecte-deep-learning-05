@@ -27,7 +27,8 @@ class Config:
     NUM_WORKERS = 4
 
     # Modelo
-    BACKBONE    = "resnet50"
+    BACKBONE = "resnet50"   # resnet18 | resnet34 | resnet50 | resnet101 | resnet152
+
     PRETRAINED  = True
 
     # Entrenamiento
@@ -35,7 +36,10 @@ class Config:
     LR_DECODER  = 1e-4        # decoder + head se entrenan desde cero
     WEIGHT_DECAY = 1e-4
     EPOCHS      = 50
+
+    # Optimizer: "adamw" | "adam" | "sgd" | "rmsprop" | "adagrad"
     OPTIMIZER   = "adamw"
+    SGD_MOMENTUM = 0.9        # solo usado si OPTIMIZER = "sgd"
 
     # Pérdida
     CE_WEIGHT   = 0.5

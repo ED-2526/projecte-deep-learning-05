@@ -51,16 +51,26 @@ def construir_optimitzador(model: UNet, cfg: Config) -> torch.optim.Optimizer:
     Usa velocitats d'aprenentatge (learning rates) diferents per a l'encoder i el decoder:
     - Encoder: velocitat baixa (no trencar els pesos preentrenats)
     - Decoder: velocitat alta (aprendre des de zero)
+    L'optimitzador es tria segons cfg.OPTIMIZER: adamw | adam | sgd | rmsprop | adagrad
     """
     encoder_params = list(model.encoder.parameters())
     decoder_params = [p for n, p in model.named_parameters() if not n.startswith("encoder.")]
-    return torch.optim.AdamW(
-        [
-            {"params": encoder_params, "lr": cfg.LR_ENCODER},
-            {"params": decoder_params, "lr": cfg.LR_DECODER},
-        ],
-        weight_decay=cfg.WEIGHT_DECAY,
-    )
+    param_groups = [
+        {"params": encoder_params, "lr": cfg.LR_ENCODER},
+        {"params": decoder_params, "lr": cfg.LR_DECODER},
+    ]
+    name = cfg.OPTIMIZER.lower()
+    if name == "adamw":
+        return torch.optim.AdamW(param_groups, weight_decay=cfg.WEIGHT_DECAY)
+    if name == "adam":
+        return torch.optim.Adam(param_groups, weight_decay=cfg.WEIGHT_DECAY)
+    if name == "sgd":
+        return torch.optim.SGD(param_groups, momentum=cfg.SGD_MOMENTUM, weight_decay=cfg.WEIGHT_DECAY)
+    if name == "rmsprop":
+        return torch.optim.RMSprop(param_groups, weight_decay=cfg.WEIGHT_DECAY)
+    if name == "adagrad":
+        return torch.optim.Adagrad(param_groups, weight_decay=cfg.WEIGHT_DECAY)
+    raise ValueError(f"Optimizer desconocido: {cfg.OPTIMIZER!r}. Usa: adamw | adam | sgd | rmsprop | adagrad")
 
 
 def registre_iou_per_classe(iou_per_classe, prefix="val_iou"):
@@ -103,7 +113,7 @@ def principal(args: argparse.Namespace) -> None:
     val_loader   = DataLoader(val_ds,   batch_size=cfg.BATCH_SIZE,
                               shuffle=False, num_workers=cfg.NUM_WORKERS, pin_memory=True)
 
-    model = UNet(num_classes=cfg.NUM_CLASSES, pretrained=cfg.PRETRAINED).to(device)
+    model = UNet(num_classes=cfg.NUM_CLASSES, backbone=cfg.BACKBONE, pretrained=cfg.PRETRAINED).to(device)
     n_params = sum(p.numel() for p in model.parameters())
     print(f"[main] U-Net params: {n_params/1e6:.2f}M")
 

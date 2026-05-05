@@ -4,22 +4,50 @@ import torch.nn.functional as F
 import torchvision.models as models
 
 
+# Canals de cada nivell per a cada backbone.
+# Format: (bottleneck, skip3, skip2, skip1, skip0)
+# ResNet18/34 usen BasicBlock (canals petits); ResNet50+ usen Bottleneck (canals grans)
+_BACKBONE_CHANNELS = {
+    "resnet18":  (512,  256, 128, 64,  64),
+    "resnet34":  (512,  256, 128, 64,  64),
+    "resnet50":  (2048, 1024, 512, 256, 64),
+    "resnet101": (2048, 1024, 512, 256, 64),
+    "resnet152": (2048, 1024, 512, 256, 64),
+}
+
+_BACKBONE_BUILDERS = {
+    "resnet18":  (models.resnet18,  models.ResNet18_Weights.IMAGENET1K_V1),
+    "resnet34":  (models.resnet34,  models.ResNet34_Weights.IMAGENET1K_V1),
+    "resnet50":  (models.resnet50,  models.ResNet50_Weights.IMAGENET1K_V2),
+    "resnet101": (models.resnet101, models.ResNet101_Weights.IMAGENET1K_V2),
+    "resnet152": (models.resnet152, models.ResNet152_Weights.IMAGENET1K_V2),
+}
+
+
 class Encoder(nn.Module):
     """
     EXPLICACIÓ SIMPLE: L'Encoder és la primera meitat de U-Net que comprimeix la imatge.
-    Usa ResNet50 preentrenat en ImageNet. Extreu características en 5 nivells (layer0 a layer4).
-    A més que la imatge es fa més petita, té més canals (més informació semàntica).
-    Retorna el bottleneck (part més comprimida) i les característiques intermedies per a skip connections.
+    Usa un backbone preentrenat en ImageNet. Extreu característiques en 5 nivells.
+    Suporta: resnet18 | resnet34 | resnet50 | resnet101 | resnet152
+    Retorna el bottleneck i les característiques intermèdies per a skip connections.
     """
-    def __init__(self, pretrained=True):
+    def __init__(self, backbone="resnet50", pretrained=True):
         super().__init__()
-        weights = models.ResNet50_Weights.IMAGENET1K_V2 if pretrained else None
-        net = models.resnet50(weights=weights)
+        if backbone not in _BACKBONE_BUILDERS:
+            raise ValueError(
+                f"Backbone '{backbone}' no soportado. "
+                f"Opciones: {list(_BACKBONE_BUILDERS.keys())}"
+            )
+        builder, weights_enum = _BACKBONE_BUILDERS[backbone]
+        weights = weights_enum if pretrained else None
+        net = builder(weights=weights)
+
         self.layer0 = nn.Sequential(net.conv1, net.bn1, net.relu, net.maxpool)
-        self.layer1 = net.layer1   # /4 ,  256 ch
-        self.layer2 = net.layer2   # /8 ,  512 ch
-        self.layer3 = net.layer3   # /16, 1024 ch
-        self.layer4 = net.layer4   # /32, 2048 ch
+        self.layer1 = net.layer1
+        self.layer2 = net.layer2
+        self.layer3 = net.layer3
+        self.layer4 = net.layer4
+        self.channels = _BACKBONE_CHANNELS[backbone]
 
     def forward(self, x):
         x0 = self.layer0(x)
@@ -32,11 +60,10 @@ class Encoder(nn.Module):
 
 class DecoderBlock(nn.Module):
     """
-    EXPLICACIÓ SIMPLE: Un bloc del Decoder (la segona meitat de U-Net) que restaura la resolució.
-    Fa dos coses:
+    EXPLICACIÓ SIMPLE: Un bloc del Decoder que restaura la resolució.
     1. Fa la imatge més gran (upsampling) amb ConvTranspose2d
-    2. Combina amb característiques de l'Encoder (skip connection) i aplica convolucions
-    Això preserva detalls fets mentre es reconstrueix la imatge original.
+    2. Combina amb característiques de l'Encoder (skip connection)
+    3. Aplica convolucions per refinar els detalls
     """
     def __init__(self, in_ch, skip_ch, out_ch):
         super().__init__()
@@ -59,24 +86,27 @@ class DecoderBlock(nn.Module):
 
 class UNet(nn.Module):
     """
-    EXPLICACIÓ SIMPLE: La xarxa UNet complet que fa segmentació semàntica.
-    Combina l'Encoder (comprimeix) i el Decoder (restaura) amb skip connections.
-    Entrada: imatge RGB de 256x256
-    Sortida: màscara de classes per a cada píxel (256x256xnum_classes)
-    La forma de U ve de que comprimeix fins al centre, després restaura la resolució.
+    EXPLICACIÓ SIMPLE: La xarxa U-Net completa per a segmentació semàntica.
+    Combina Encoder + Decoder amb skip connections.
+    El backbone es configura via el paràmetre 'backbone':
+        resnet18 | resnet34 | resnet50 | resnet101 | resnet152
+    Entrada: imatge RGB (B, 3, H, W)
+    Sortida: logits per píxel (B, num_classes, H, W)
     """
-    def __init__(self, num_classes, pretrained=True):
+    def __init__(self, num_classes, backbone="resnet50", pretrained=True):
         super().__init__()
-        self.encoder = Encoder(pretrained=pretrained)
-        self.dec1 = DecoderBlock(2048, 1024, 512)   # 7  -> 14
-        self.dec2 = DecoderBlock( 512,  512, 256)   # 14 -> 28
-        self.dec3 = DecoderBlock( 256,  256, 128)   # 28 -> 56
-        self.dec4 = DecoderBlock( 128,   64,  64)   # 56 -> 112
-        self.head = nn.Conv2d(64, num_classes, kernel_size=1)
+        self.encoder = Encoder(backbone=backbone, pretrained=pretrained)
+        b, s3, s2, s1, s0 = self.encoder.channels
+
+        self.dec1 = DecoderBlock(b,    s3, b // 4)
+        self.dec2 = DecoderBlock(b//4, s2, b // 8)
+        self.dec3 = DecoderBlock(b//8, s1, b // 16)
+        self.dec4 = DecoderBlock(b//16, s0, b // 32)
+        self.head = nn.Conv2d(b // 32, num_classes, kernel_size=1)
 
     def forward(self, x):
         in_size = x.shape[-2:]
-        bottleneck, skips = self.encoder(x)          # skips = [x3, x2, x1, x0]
+        bottleneck, skips = self.encoder(x)   # skips = [x3, x2, x1, x0]
         d = self.dec1(bottleneck, skips[0])
         d = self.dec2(d,          skips[1])
         d = self.dec3(d,          skips[2])
