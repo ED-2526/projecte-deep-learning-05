@@ -80,8 +80,7 @@ Input (B, 3, 256, 256)
 ## 5. Instalación
 
 ```bash
-conda env create --file environment.yml
-conda activate xnap-segmentation
+conda activate grupo-5
 ```
 
 Para tracking de experimentos (Wandb):
@@ -113,7 +112,7 @@ python main.py --data-root ./data --epochs 50
 ### Argumentos disponibles
 | Flag | Descripción |
 |---|---|
-| `--data-root` | Carpeta donde descargar/leer VOC. Por defecto `./data` |
+| `--data-root` | Carpeta donde descargar/leer VOC. Por defecto `./VOCDataset` |
 | `--epochs` | Sobrescribe `Config.EPOCHS` |
 | `--overfit N` | Entrena/valida sobre las primeras `N` imágenes (sanity check) |
 | `--no-wandb` | Desactiva el logging a Wandb |

@@ -114,6 +114,9 @@ def principal(args: argparse.Namespace) -> None:
                               shuffle=False, num_workers=cfg.NUM_WORKERS, pin_memory=True)
 
     model = UNet(num_classes=cfg.NUM_CLASSES, backbone=cfg.BACKBONE, pretrained=cfg.PRETRAINED).to(device)
+    for param in model.encoder.parameters():
+        param.requires_grad = False
+
     n_params = sum(p.numel() for p in model.parameters())
     print(f"[main] U-Net params: {n_params/1e6:.2f}M")
 
@@ -130,7 +133,7 @@ def principal(args: argparse.Namespace) -> None:
     use_wandb = not args.no_wandb
     if use_wandb:
         import wandb
-        run_name = "overfit" if args.overfit > 0 else f"{cfg.DATASET.lower()}-baseline"
+        run_name = "overfit" if args.overfit > 0 else f"{cfg.DATASET.lower()}-{cfg.OPTIMIZER}"
         wandb.init(
             project="xnap-segmentation",
             name=run_name,

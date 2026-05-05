@@ -27,7 +27,7 @@ class Config:
     NUM_WORKERS = 4
 
     # Modelo
-    BACKBONE = "resnet50"   # resnet18 | resnet34 | resnet50 | resnet101 | resnet152
+    BACKBONE = "resnet152"   # resnet18 | resnet34 | resnet50 | resnet101 | resnet152
 
     PRETRAINED  = True
 
