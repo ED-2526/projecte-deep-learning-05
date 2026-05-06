@@ -28,11 +28,22 @@ class Config:
 
     # Modelo
     BACKBONE = "resnet152"   # resnet18 | resnet34 | resnet50 | resnet101 | resnet152
-
     PRETRAINED  = True
 
+    # Congelación del encoder capa a capa (True = congelada, False = entrenable):
+    # layer0 → conv inicial + maxpool  (features muy genéricas: bordes)
+    # layer1 → primer bloque ResNet    (features simples: texturas)
+    # layer2 → segundo bloque ResNet   (features medias: formas)
+    # layer3 → tercer bloque ResNet    (features complejas: partes de objetos)
+    # layer4 → cuarto bloque ResNet    (features semánticas: objetos completos)
+    FREEZE_LAYER0 = True
+    FREEZE_LAYER1 = True
+    FREEZE_LAYER2 = True
+    FREEZE_LAYER3 = True
+    FREEZE_LAYER4 = True
+
     # Entrenamiento
-    LR_ENCODER  = 1e-5        # bajo: no destruir pesos ImageNet
+    LR_ENCODER  = 1e-4        # bajo: no destruir pesos ImageNet
     LR_DECODER  = 1e-4        # decoder + head se entrenan desde cero
     WEIGHT_DECAY = 1e-4
     EPOCHS      = 50

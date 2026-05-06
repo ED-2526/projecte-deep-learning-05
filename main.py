@@ -53,12 +53,12 @@ def construir_optimitzador(model: UNet, cfg: Config) -> torch.optim.Optimizer:
     - Decoder: velocitat alta (aprendre des de zero)
     L'optimitzador es tria segons cfg.OPTIMIZER: adamw | adam | sgd | rmsprop | adagrad
     """
-    encoder_params = list(model.encoder.parameters())
-    decoder_params = [p for n, p in model.named_parameters() if not n.startswith("encoder.")]
-    param_groups = [
-        {"params": encoder_params, "lr": cfg.LR_ENCODER},
-        {"params": decoder_params, "lr": cfg.LR_DECODER},
-    ]
+    encoder_params = [p for p in model.encoder.parameters() if p.requires_grad]
+    decoder_params = [p for n, p in model.named_parameters() if not n.startswith("encoder.") and p.requires_grad]
+    param_groups = []
+    if encoder_params:
+        param_groups.append({"params": encoder_params, "lr": cfg.LR_ENCODER})
+    param_groups.append({"params": decoder_params, "lr": cfg.LR_DECODER})
     name = cfg.OPTIMIZER.lower()
     if name == "adamw":
         return torch.optim.AdamW(param_groups, weight_decay=cfg.WEIGHT_DECAY)
@@ -114,11 +114,26 @@ def principal(args: argparse.Namespace) -> None:
                               shuffle=False, num_workers=cfg.NUM_WORKERS, pin_memory=True)
 
     model = UNet(num_classes=cfg.NUM_CLASSES, backbone=cfg.BACKBONE, pretrained=cfg.PRETRAINED).to(device)
-    for param in model.encoder.parameters():
-        param.requires_grad = False
 
-    n_params = sum(p.numel() for p in model.parameters())
-    print(f"[main] U-Net params: {n_params/1e6:.2f}M")
+    freeze_map = {
+        "layer0": cfg.FREEZE_LAYER0,
+        "layer1": cfg.FREEZE_LAYER1,
+        "layer2": cfg.FREEZE_LAYER2,
+        "layer3": cfg.FREEZE_LAYER3,
+        "layer4": cfg.FREEZE_LAYER4,
+    }
+    frozen = []
+    for layer_name, should_freeze in freeze_map.items():
+        if should_freeze:
+            for param in getattr(model.encoder, layer_name).parameters():
+                param.requires_grad = False
+            frozen.append(layer_name)
+    if frozen:
+        print(f"[main] Capes congelades: {', '.join(frozen)}")
+
+    n_params    = sum(p.numel() for p in model.parameters())
+    n_trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)
+    print(f"[main] U-Net params: {n_params/1e6:.2f}M total | {n_trainable/1e6:.2f}M entrenables")
 
     criterion = SegmentationLoss(
         ce_weight=cfg.CE_WEIGHT,
@@ -133,9 +148,14 @@ def principal(args: argparse.Namespace) -> None:
     use_wandb = not args.no_wandb
     if use_wandb:
         import wandb
-        run_name = "overfit" if args.overfit > 0 else f"{cfg.DATASET.lower()}-{cfg.OPTIMIZER}"
+        frozen_layers = [f"L{i}" for i, f in enumerate([
+            cfg.FREEZE_LAYER0, cfg.FREEZE_LAYER1, cfg.FREEZE_LAYER2,
+            cfg.FREEZE_LAYER3, cfg.FREEZE_LAYER4
+        ]) if f]
+        freeze_str = f"freeze({'_'.join(frozen_layers)})" if frozen_layers else "nofrozen"
+        run_name = "overfit" if args.overfit > 0 else f"{cfg.BACKBONE}-{cfg.OPTIMIZER}-{freeze_str}"
         wandb.init(
-            project="xnap-segmentation",
+            project="finetuning",
             name=run_name,
             mode="offline" if args.wandb_offline else "online",
             config={k: getattr(cfg, k) for k in dir(cfg) if k.isupper()},
