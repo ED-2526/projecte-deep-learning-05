@@ -175,8 +175,8 @@ def principal(args: argparse.Namespace) -> None:
             "train_loss":  train_loss,
             "val_loss":    val_loss,
             "val_mIoU":    val_metrics["mIoU"],
-            "lr_encoder":  optimizer.param_groups[0]["lr"],
-            "lr_decoder":  optimizer.param_groups[1]["lr"],
+            "lr_encoder":  optimizer.param_groups[0]["lr"] if len(optimizer.param_groups) > 1 else 0.0,
+            "lr_decoder":  optimizer.param_groups[-1]["lr"],
         }
         log.update(registre_iou_per_classe(val_metrics["IoU_per_class"]))
 
