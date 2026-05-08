@@ -7,7 +7,9 @@ from pathlib import Path
 
 import numpy as np
 import torch
-from torch.utils.data import DataLoader, Subset
+from torch.utils.data import DataLoader, Subset, Dataset
+from PIL import Image
+import pycocotools.mask as maskUtils
 
 from classes import VOC_CLASSES
 from config import Config
@@ -32,17 +34,95 @@ def establir_llavor(seed: int) -> None:
         torch.cuda.manual_seed_all(seed)
 
 
-def construir_voc(root: str, image_set: str, img_size: int):
+class COCOSegmentationWrapper(Dataset):
     """
-    EXPLICACIÓ SIMPLE: Carrega el dataset VOC (imatges i màscares).
-    Si no existeix, el descarrega automàticament. Aplica transformacions per adaptar
-    les imatges al tamaño correcte i fer augmentació de dades si és entrenament.
+    WRAPPER OPTIMIZADO para COCO. Converteix annotations RLE a masks PIL.
+    Con cache=True, precachea todas las masks al init (más rápido durante training).
+    """
+    def __init__(self, coco_dataset, transforms=None, cache_masks=False):
+        self.coco_dataset = coco_dataset
+        self.transforms = transforms
+        self._mask_cache = {} if cache_masks else None
+        
+    def __len__(self):
+        return len(self.coco_dataset)
+    
+    def __getitem__(self, idx):
+        image, target = self.coco_dataset[idx]
+        
+        # Usar cache si está disponible
+        if self._mask_cache is not None:
+            if idx not in self._mask_cache:
+                self._mask_cache[idx] = self._build_mask(image, target)
+            mask = self._mask_cache[idx]
+        else:
+            mask = self._build_mask(image, target)
+        
+        # Aplicar transformaciones
+        if self.transforms:
+            image, mask = self.transforms(image, mask)
+        
+        return image, mask
+    
+    def _build_mask(self, image, target):
+        """Build segmentation mask from COCO RLE annotations."""
+        if not target:
+            H, W = image.size[1], image.size[0]
+            return Image.fromarray(np.zeros((H, W), dtype=np.uint8))
+        
+        H, W = image.size[1], image.size[0]
+        mask = np.zeros((H, W), dtype=np.uint8)
+        
+        for ann in target:
+            if "segmentation" not in ann:
+                continue
+            segmentation = ann["segmentation"]
+            if not isinstance(segmentation, dict):  # Solo RLE
+                continue
+            
+            try:
+                category_id = min(ann.get("category_id", 0), 255)  # Cap at 255 for uint8
+                rle_mask = maskUtils.decode(segmentation)
+                mask[rle_mask > 0] = category_id
+            except Exception:
+                pass
+        
+        return Image.fromarray(mask)
+
+
+
+def construir_coco(root: str, image_set: str, img_size: int, cache_masks: bool = False):
+    """
+    EXPLICACIÓ SIMPLE: Carrega el dataset COCO (imatges i anotacions).
+    COCO2017 té train2017, val2017, i test2017.
+    Aplica transformacions per adaptar les imatges al tamaño correcte i fer augmentació.
     """
     transform = PairedTransform(img_size=img_size, train=(image_set == "train"))
-    return datasets.VOCSegmentation(
-        root=root, year="2012", image_set=image_set, download=True,
-        transforms=transform,
+    
+    # Map image_set to COCO year folder
+    year_map = {"train": "train2017", "val": "val2017"}
+    coco_year = year_map.get(image_set, "val2017")
+    
+    # Carrega COCO sense transformacions (les aplicarem al wrapper)
+    coco_dataset = datasets.CocoDetection(
+        root=f"{root}/{coco_year}",
+        annFile=f"{root}/annotations/instances_{coco_year}.json",
+        transforms=None,  # No transforms aquí; les aplicarem al wrapper
     )
+    
+    # Wrap per convertir annotations a segmentation masks
+    wrapper = COCOSegmentationWrapper(coco_dataset, transforms=transform, cache_masks=cache_masks)
+    
+    # Pre-cache all masks if requested (para val, no es mucho: 5k imágenes)
+    if cache_masks:
+        print(f"[construir_coco] Pre-caching masks para {image_set} ({len(wrapper)} imágenes)...")
+        for i in range(len(wrapper)):
+            if i % max(1, len(wrapper)//10) == 0:
+                print(f"  {i}/{len(wrapper)}")
+            _ = wrapper[i]  # Trigger caching
+        print(f"[construir_coco] Masks cacheadas!")
+    
+    return wrapper
 
 
 def construir_optimitzador(model: UNet, cfg: Config) -> torch.optim.Optimizer:
@@ -97,10 +177,12 @@ def principal(args: argparse.Namespace) -> None:
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"[main] device = {device}  |  dataset = {cfg.DATASET}  |  num_classes = {cfg.NUM_CLASSES}")
 
-    # --- data (VOC2012 baseline) ---
-    num_classes = 21
-    train_ds = construir_voc(args.data_root, "train", cfg.IMG_SIZE)
-    val_ds   = construir_voc(args.data_root, "val",   cfg.IMG_SIZE)
+    # --- data (COCO2017) ---
+    num_classes = 80  # COCO has 80 object classes
+    # Cache val masks (5k imágenes = ~1.5GB RAM pero vale la pena)
+    # Train masks: demasiadas (118k), solo usar transforms
+    train_ds = construir_coco(args.data_root, "train", cfg.IMG_SIZE, cache_masks=False)
+    val_ds   = construir_coco(args.data_root, "val",   cfg.IMG_SIZE, cache_masks=True)
 
     if args.overfit > 0:
         idx = list(range(args.overfit))
@@ -109,9 +191,9 @@ def principal(args: argparse.Namespace) -> None:
         print(f"[main] OVERFIT mode on {args.overfit} samples")
 
     train_loader = DataLoader(train_ds, batch_size=cfg.BATCH_SIZE,
-                              shuffle=True,  num_workers=cfg.NUM_WORKERS, pin_memory=True)
+                              shuffle=True,  num_workers=cfg.NUM_WORKERS, pin_memory=False)
     val_loader   = DataLoader(val_ds,   batch_size=cfg.BATCH_SIZE,
-                              shuffle=False, num_workers=cfg.NUM_WORKERS, pin_memory=True)
+                              shuffle=False, num_workers=cfg.NUM_WORKERS, pin_memory=False)
 
     model = UNet(num_classes=cfg.NUM_CLASSES, backbone=cfg.BACKBONE, pretrained=cfg.PRETRAINED).to(device)
 
@@ -153,9 +235,11 @@ def principal(args: argparse.Namespace) -> None:
             cfg.FREEZE_LAYER3, cfg.FREEZE_LAYER4
         ]) if f]
         freeze_str = f"freeze({'_'.join(frozen_layers)})" if frozen_layers else "nofrozen"
-        run_name = "overfit" if args.overfit > 0 else f"{cfg.BACKBONE}-{cfg.OPTIMIZER}-{freeze_str}"
+        run_name = f"coco-{cfg.BATCH_SIZE}-{cfg.BACKBONE}"
         wandb.init(
-            project="finetuning",
+            project="COCO",
+            entity="1671799-uab",
+            group="batch",
             name=run_name,
             mode="offline" if args.wandb_offline else "online",
             config={k: getattr(cfg, k) for k in dir(cfg) if k.isupper()},
@@ -218,9 +302,9 @@ def analitzar_arguments() -> argparse.Namespace:
     - overfit: mode de prova (entrenar amb pocs datos)
     - wandb: activar o desactivar el logging
     """
-    p = argparse.ArgumentParser(description="U-Net segmentation training (VOC2012 baseline)")
-    p.add_argument("--data-root", type=str, default="./data",
-                   help="Carpeta donde descargar/leer el dataset")
+    p = argparse.ArgumentParser(description="U-Net segmentation training (COCO2017)")
+    p.add_argument("--data-root", type=str, default="/home/datasets/coco",
+                   help="Carpeta donde leer el dataset COCO")
     p.add_argument("--epochs", type=int, default=None,
                    help="Sobrescribe Config.EPOCHS")
     p.add_argument("--overfit", type=int, default=0,

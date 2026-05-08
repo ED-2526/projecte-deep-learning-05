@@ -17,17 +17,18 @@ class Config:
     """
     # Datos — el enunciado del proyecto pide COCO 256x256.
     # Se deja COCO por defecto; cambiar a "VOC2012"/21 si decides empezar por VOC.
-    DATASET     = "VOC"
-    NUM_CLASSES = 21     
+    #DATASET     = "VOC"
+    #NUM_CLASSES = 21     
     
-    # DATASET     = "COCO"
-    # NUM_CLASSES = 91          # COCO stuff+things; ajusta según el subset que uses
+    DATASET     = "COCO"
+    NUM_CLASSES = 80          # COCO stuff+things; ajusta según el subset que uses
     IMG_SIZE    = 256
-    BATCH_SIZE  = 8
-    NUM_WORKERS = 4
+    BATCH_SIZE  = 32
+    NUM_WORKERS = 0  # 0 en CPU (multiprocessing overhead es más caro que el beneficio)
+    CACHE_MASKS = True  # Cachear masks en memoria para evitar decodificar cada época
 
     # Modelo
-    BACKBONE = "resnet152"   # resnet18 | resnet34 | resnet50 | resnet101 | resnet152
+    BACKBONE = "resnet50"   # resnet18 | resnet34 | resnet50 | resnet101 | resnet152 (resnet50 es ~4x más rápido que resnet152)
     PRETRAINED  = True
 
     # Congelación del encoder capa a capa (True = congelada, False = entrenable):
@@ -38,9 +39,9 @@ class Config:
     # layer4 → cuarto bloque ResNet    (features semánticas: objetos completos)
     FREEZE_LAYER0 = True
     FREEZE_LAYER1 = True
-    FREEZE_LAYER2 = True
-    FREEZE_LAYER3 = True
-    FREEZE_LAYER4 = True
+    FREEZE_LAYER2 = False  # Descongelar para aprender mejor con COCO
+    FREEZE_LAYER3 = False
+    FREEZE_LAYER4 = False
 
     # Entrenamiento
     LR_ENCODER  = 1e-4        # bajo: no destruir pesos ImageNet
