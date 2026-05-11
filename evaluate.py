@@ -19,7 +19,7 @@ from classes import get_classes, get_colormap
 from config import Config
 from engine import validar
 from losses import SegmentationLoss
-from main import construir_voc
+from main import construir_dataset
 from metrics import SegmentationMetrics
 from models.unet import UNet
 from transforms import PairedTransform
@@ -108,17 +108,19 @@ def principal(args):
     """
     cfg = Config()
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    num_classes = 21
+    num_classes = cfg.NUM_CLASSES
     print(f"[evaluate] dataset = {cfg.DATASET}  |  num_classes = {num_classes}")
 
-    val_ds     = construir_voc(args.data_root, "val", cfg.IMG_SIZE)
+    val_ds     = construir_dataset(cfg, args.data_root, "val")
     val_loader = DataLoader(val_ds, batch_size=cfg.BATCH_SIZE,
                             shuffle=False, num_workers=cfg.NUM_WORKERS, pin_memory=True)
 
     model = UNet(num_classes=num_classes, backbone=cfg.BACKBONE, pretrained=False).to(device)
     carregar_checkpoint(model, args.ckpt)
 
-    criterion = SegmentationLoss(cfg.CE_WEIGHT, cfg.DICE_WEIGHT, cfg.IGNORE_INDEX)
+    criterion = SegmentationLoss(focal_weight=cfg.FOCAL_WEIGHT, dice_weight=cfg.DICE_WEIGHT,
+                                 gamma=getattr(cfg, "FOCAL_GAMMA", 2.0),
+                                 ignore_index=cfg.IGNORE_INDEX)
     metrics   = SegmentationMetrics(num_classes=num_classes, ignore_index=cfg.IGNORE_INDEX)
     val_loss, val_metrics = validar(model, val_loader, criterion, metrics, device)
 

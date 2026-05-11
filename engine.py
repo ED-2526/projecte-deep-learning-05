@@ -3,14 +3,15 @@ from tqdm.auto import tqdm
 
 
 def entrenar_una_epoca(model, loader, optimizer, criterion, device,
-                       scaler=None, use_amp=False, channels_last=False, epoch=None):
+                       scaler=None, scheduler=None, use_amp=False,
+                       channels_last=False, grad_clip_norm=0.0, epoch=None):
     """
     EXPLICACIÓ SIMPLE: Entrena el model durant un epoch (una passada per totes les dades).
     Per a cada batch:
-    1. Passa imatges pel model (en mixed precision si use_amp=True)
-    2. Calcula l'error (pèrdua) en fp32
-    3. Actualitza els pesos del model (amb GradScaler si AMP)
-    4. Mostra la pèrdua actual
+    1. Forward del model (en mixed precision fp16 si use_amp=True)
+    2. Calcula la pèrdua en fp32 (la Dice usa smooth=1e-6 que es perd en fp16)
+    3. Backward + (opcional) recorte de gradiente + step (amb GradScaler si AMP)
+    4. (Opcional) avança el scheduler per batch — necessari per al warmup
     Retorna la pèrdua promitjada de l'epoch.
     """
     model.train()
@@ -18,6 +19,7 @@ def entrenar_una_epoca(model, loader, optimizer, criterion, device,
     desc = f"train ep{epoch:03d}" if epoch is not None else "train"
     pbar = tqdm(loader, desc=desc, leave=False)
     mem_fmt = torch.channels_last if channels_last else torch.contiguous_format
+    amp_active = use_amp and scaler is not None and scaler.is_enabled()
 
     for images, masks in pbar:
         images = images.to(device, non_blocking=True, memory_format=mem_fmt)
@@ -26,15 +28,23 @@ def entrenar_una_epoca(model, loader, optimizer, criterion, device,
         optimizer.zero_grad(set_to_none=True)
         with torch.autocast(device_type=device.type, enabled=use_amp):
             preds = model(images)
-        loss = criterion(preds.float(), masks)   # la loss siempre en fp32 (Dice usa smooth=1e-6)
+        loss = criterion(preds.float(), masks)   # loss siempre en fp32
 
-        if use_amp and scaler is not None:
+        if amp_active:
             scaler.scale(loss).backward()
+            if grad_clip_norm and grad_clip_norm > 0:
+                scaler.unscale_(optimizer)
+                torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip_norm)
             scaler.step(optimizer)
             scaler.update()
         else:
             loss.backward()
+            if grad_clip_norm and grad_clip_norm > 0:
+                torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip_norm)
             optimizer.step()
+
+        if scheduler is not None:
+            scheduler.step()   # per-batch step (warmup + cosine annealing)
 
         total_loss += loss.item()
         pbar.set_postfix(loss=f"{loss.item():.4f}")
@@ -47,10 +57,7 @@ def validar(model, loader, criterion, metrics, device,
             use_amp=False, channels_last=False, epoch=None):
     """
     EXPLICACIÓ SIMPLE: Avalua el model en dades de validació (sense actualitzar pesos).
-    Per a cada batch:
-    1. Passa imatges pel model (mixed precision si use_amp=True)
-    2. Calcula l'error en fp32
-    3. Actualitza les mètriques de precisió
+    Per a cada batch: forward, calcula la pèrdua en fp32 i acumula les mètriques.
     Retorna la pèrdua promitjada i les mètriques calculades (mIoU, IoU per classe).
     """
     model.eval()
