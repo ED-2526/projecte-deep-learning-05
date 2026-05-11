@@ -3,6 +3,45 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 
+class FocalLoss(nn.Module):
+    """
+    Focal Loss: Enfatiza los píxeles difíciles de clasificar.
+    Especialmente útil para clases desbalanceadas (como en COCO).
+    gamma=2 es un buen valor por defecto.
+    """
+    def __init__(self, alpha=0.25, gamma=2.0, ignore_index=255):
+        super().__init__()
+        self.alpha = alpha
+        self.gamma = gamma
+        self.ignore_index = ignore_index
+
+    def forward(self, preds, targets):
+        # preds: (B, C, H, W)
+        # targets: (B, H, W)
+        num_classes = preds.shape[1]
+        targets = targets.long()
+        
+        # Crear máscara para píxeles a ignorar
+        valid_mask = targets != self.ignore_index
+        targets_safe = targets.clone()
+        targets_safe[~valid_mask] = 0
+        
+        # Calcular CE
+        ce_loss = F.cross_entropy(preds, targets_safe, reduction='none')
+        
+        # Aplicar máscara
+        ce_loss = ce_loss * valid_mask.float()
+        
+        # Calcular probabilidades
+        p = torch.exp(-ce_loss)
+        
+        # Focal loss = -alpha * (1-p)^gamma * ce_loss
+        focal_weight = self.alpha * torch.pow(1 - p, self.gamma)
+        focal_loss = focal_weight * ce_loss
+        
+        return focal_loss.mean()
+
+
 class DiceLoss(nn.Module):
     """
     EXPLICACIÓ SIMPLE: Calcula la Dice Loss, una mètrica que mesura la superposició
@@ -41,17 +80,17 @@ class DiceLoss(nn.Module):
 class SegmentationLoss(nn.Module):
     """
     EXPLICACIÓ SIMPLE: Combina dos tipus d'error per entrenar el model:
-    1. Cross-Entropy Loss: Error estàndard per a classificació
+    1. Focal Loss: Mejor que CE para clases desbalanceadas (como COCO)
     2. Dice Loss: Error especialitzat per desbalanceo de classes
     Els dos es pesen 0.5 cada un. Usar ambdós fa que el model aprengui millor
     les classes que són rares o petites.
     """
-    def __init__(self, ce_weight=0.5, dice_weight=0.5, ignore_index=255):
+    def __init__(self, focal_weight=0.6, dice_weight=0.4, ignore_index=255):
         super().__init__()
-        self.ce   = nn.CrossEntropyLoss(ignore_index=ignore_index)
+        self.focal = FocalLoss(ignore_index=ignore_index)
         self.dice = DiceLoss(ignore_index=ignore_index)
-        self.w_ce, self.w_dice = ce_weight, dice_weight
+        self.w_focal, self.w_dice = focal_weight, dice_weight
 
     def forward(self, preds, targets):
-        return self.w_ce   * self.ce(preds, targets.long()) + \
+        return self.w_focal * self.focal(preds, targets) + \
                self.w_dice * self.dice(preds.softmax(dim=1), targets)

@@ -136,14 +136,34 @@ def principal(args: argparse.Namespace) -> None:
     print(f"[main] U-Net params: {n_params/1e6:.2f}M total | {n_trainable/1e6:.2f}M entrenables")
 
     criterion = SegmentationLoss(
-        ce_weight=cfg.CE_WEIGHT,
+        focal_weight=cfg.CE_WEIGHT,  # Ahora es Focal Loss en lugar de CE
         dice_weight=cfg.DICE_WEIGHT,
         ignore_index=cfg.IGNORE_INDEX,
     )
     epochs = args.epochs if args.epochs is not None else cfg.EPOCHS
     optimizer = construir_optimitzador(model, cfg)
+<<<<<<< Updated upstream
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=epochs)
     metrics   = SegmentationMetrics(num_classes=cfg.NUM_CLASSES, ignore_index=cfg.IGNORE_INDEX)
+=======
+    
+    # Crear scheduler con warmup
+    warmup_epochs = getattr(cfg, 'WARMUP_EPOCHS', 2)
+    warmup_steps = warmup_epochs * len(train_loader)
+    total_steps = epochs * len(train_loader)
+    
+    def lr_lambda(current_step: int):
+        """Linear warmup seguido de cosine annealing."""
+        if current_step < warmup_steps:
+            # Warmup lineal
+            return float(current_step) / float(max(1, warmup_steps))
+        # Cosine annealing después del warmup
+        progress = float(current_step - warmup_steps) / float(max(1, total_steps - warmup_steps))
+        return max(0.0, 0.5 * (1.0 + np.cos(np.pi * progress)))
+    
+    scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
+    metrics   = SegmentationMetrics(num_classes=num_classes, ignore_index=cfg.IGNORE_INDEX)
+>>>>>>> Stashed changes
 
     use_wandb = not args.no_wandb
     if use_wandb:
@@ -153,7 +173,11 @@ def principal(args: argparse.Namespace) -> None:
             cfg.FREEZE_LAYER3, cfg.FREEZE_LAYER4
         ]) if f]
         freeze_str = f"freeze({'_'.join(frozen_layers)})" if frozen_layers else "nofrozen"
+<<<<<<< Updated upstream
         run_name = "overfit" if args.overfit > 0 else f"{cfg.BACKBONE}-{cfg.OPTIMIZER}-{freeze_str}"
+=======
+        run_name = f"3.0coco-{cfg.BATCH_SIZE}-{cfg.BACKBONE}"
+>>>>>>> Stashed changes
         wandb.init(
             project="finetuning",
             name=run_name,
@@ -164,11 +188,12 @@ def principal(args: argparse.Namespace) -> None:
 
     ckpt_dir = Path("checkpoints"); ckpt_dir.mkdir(exist_ok=True)
     best_miou = 0.0
+    use_amp = getattr(cfg, 'USE_AMP', True)
 
     for epoch in range(epochs):
-        train_loss = entrenar_una_epoca(model, train_loader, optimizer, criterion, device, epoch=epoch)
+        train_loss = entrenar_una_epoca(model, train_loader, optimizer, criterion, device, 
+                                       scheduler=scheduler, epoch=epoch, use_amp=use_amp)
         val_loss, val_metrics = validar(model, val_loader, criterion, metrics, device, epoch=epoch)
-        scheduler.step()
 
         log = {
             "epoch":       epoch,

@@ -1,0 +1,3 @@
+usage: main.py [-h] [--data-root DATA_ROOT] [--epochs EPOCHS]
+               [--overfit OVERFIT] [--no-wandb] [--wandb-offline]
+main.py: error: unrecognized arguments: /home/datasets/coco

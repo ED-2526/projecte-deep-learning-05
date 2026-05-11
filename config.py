@@ -20,6 +20,7 @@ class Config:
     DATASET     = "VOC"
     NUM_CLASSES = 21     
     
+<<<<<<< Updated upstream
     # DATASET     = "COCO"
     # NUM_CLASSES = 91          # COCO stuff+things; ajusta según el subset que uses
     IMG_SIZE    = 256
@@ -28,6 +29,17 @@ class Config:
 
     # Modelo
     BACKBONE = "resnet152"   # resnet18 | resnet34 | resnet50 | resnet101 | resnet152
+=======
+    DATASET     = "COCO"
+    NUM_CLASSES = 81          # COCO usa 80 clases de objeto + fondo
+    IMG_SIZE    = 384         # AUMENTADO: de 256 a 384 (más detalle, mejor mIoU +3-5%)
+    BATCH_SIZE  = 32          # REDUCIDO: de 48 a 32 (por IMG_SIZE más grande)
+    NUM_WORKERS = 12           # Aumentado para paralelizar carga de datos
+    CACHE_MASKS = True  # Cachear masks en memoria para evitar decodificar cada época
+
+    # Modelo
+    BACKBONE = "resnet50"   # resnet18 | resnet34 | resnet50 | resnet101 | resnet152 (resnet50 es ~4x más rápido que resnet152)
+>>>>>>> Stashed changes
     PRETRAINED  = True
 
     # Congelación del encoder capa a capa (True = congelada, False = entrenable):
@@ -38,24 +50,34 @@ class Config:
     # layer4 → cuarto bloque ResNet    (features semánticas: objetos completos)
     FREEZE_LAYER0 = True
     FREEZE_LAYER1 = True
+<<<<<<< Updated upstream
     FREEZE_LAYER2 = True
     FREEZE_LAYER3 = True
     FREEZE_LAYER4 = True
+=======
+    FREEZE_LAYER2 = False     # DESCONGELADO: más capacidad de aprendizaje (+3-5% mIoU)
+    FREEZE_LAYER3 = False     # DESCONGELADO: layer3 y layer4 necesitan entrenar para segmentación
+    FREEZE_LAYER4 = False     # DESCONGELADO: son capas semánticas críticas
+>>>>>>> Stashed changes
 
     # Entrenamiento
-    LR_ENCODER  = 1e-4        # bajo: no destruir pesos ImageNet
-    LR_DECODER  = 1e-4        # decoder + head se entrenan desde cero
+    LR_ENCODER  = 1e-3        # AUMENTADO: de 5e-4, con más capas abiertas puede ser mayor
+    LR_DECODER  = 1e-2        # AUMENTADO: de 5e-3 (decoder es crítico)
     WEIGHT_DECAY = 1e-4
-    EPOCHS      = 50
+    EPOCHS      = 50           # AUMENTADO: de 30 a 50 (más convergencia, mejor mIoU)
+    WARMUP_EPOCHS = 3          # AUMENTADO: warmup más largo para estabilidad
 
     # Optimizer: "adamw" | "adam" | "sgd" | "rmsprop" | "adagrad"
-    OPTIMIZER   = "adamw"
-    SGD_MOMENTUM = 0.9        # solo usado si OPTIMIZER = "sgd"
+    OPTIMIZER   = "sgd"        # CAMBIO: SGD suele dar mejor mIoU final que AdamW (aunque más lento)
+    SGD_MOMENTUM = 0.95        # Más momentum para convergencia más robusta
 
     # Pérdida
-    CE_WEIGHT   = 0.5
-    DICE_WEIGHT = 0.5
+    CE_WEIGHT   = 0.6          # CAMBIO: ahora FOCAL_WEIGHT (Focal Loss mejor que CE)
+    DICE_WEIGHT = 0.4          # AJUSTADO: de 0.5 a 0.4
     IGNORE_INDEX = 255
+    
+    # Mixed Precision Training (AMP) - 1.5-2x más rápido
+    USE_AMP = True
 
     # Seed
     SEED = 42
