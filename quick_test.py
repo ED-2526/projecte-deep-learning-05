@@ -99,5 +99,5 @@ print(f"    OK — mIoU = {res['mIoU']:.4f} | {len(res['IoU_per_class'])} IoUs p
 
 print("\n" + "=" * 70)
 print("TODO OK — el pipeline está sano. Para entrenar de verdad:")
-print(f"  python main.py --data-root <ruta-dataset> --epochs {cfg.EPOCHS}")
+print(f"  python main.py --data-root /home/datasets/coco --epochs {cfg.EPOCHS}")
 print("=" * 70)

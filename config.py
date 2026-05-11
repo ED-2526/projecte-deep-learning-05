@@ -56,7 +56,7 @@ class Config:
     LR_ENCODER   = 1e-5       # bajo: no destruir los pesos ImageNet de las capas descongeladas
     LR_DECODER   = 1e-4       # decoder + head se entrenan desde cero
     WEIGHT_DECAY = 1e-4
-    EPOCHS        = 30        # con la mejor loss + augmentations + scheduler, 30 suele bastar
+    EPOCHS        = 50        # con la mejor loss + augmentations + scheduler, 30 suele bastar
     WARMUP_EPOCHS = 2         # warmup lineal del LR antes del cosine annealing
 
     # Optimizer: "adamw" | "adam" | "sgd" | "rmsprop" | "adagrad"
