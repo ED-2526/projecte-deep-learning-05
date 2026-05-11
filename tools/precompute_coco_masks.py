@@ -13,14 +13,20 @@ Uso (desde la raíz del repo):
     python tools/precompute_coco_masks.py --coco-root /ruta/a/COCO --split train
     python tools/precompute_coco_masks.py --coco-root /ruta/a/COCO --split val
 
+Si el COCO es de solo lectura (p.ej. lo descargó el profe), guarda las máscaras
+en una carpeta TUYA con --masks-root, y luego pon ese mismo valor en Config.MASKS_ROOT:
+    python tools/precompute_coco_masks.py --coco-root /home/datasets/coco \
+        --masks-root /home/edxnG05/coco_masks --split val
+
 Estructura esperada en --coco-root:
     train2017/   val2017/
     annotations/instances_train2017.json
     annotations/instances_val2017.json
 
 Salida:
-    <coco-root>/masks_train2017/000000XXXXXX.png   (1 canal; valor = índice 1..80; 0 = fondo)
-    <coco-root>/masks_val2017/...
+    <masks-root>/masks_train2017/000000XXXXXX.png   (1 canal; valor = índice 1..80; 0 = fondo)
+    <masks-root>/masks_val2017/...
+    (si no se pasa --masks-root, se escribe dentro de --coco-root)
 
 ⚠️ Si habías generado máscaras con una versión antigua de este script (category_id
    crudos hasta 90), bórralas y vuelve a ejecutar (o usa --overwrite).
@@ -42,7 +48,7 @@ from classes import COCO_CAT_ID_TO_INDEX  # noqa: E402
 _SPLIT_DIR = {"train": "train2017", "val": "val2017"}
 
 
-def precompute(coco_root: str, split: str, overwrite: bool = False) -> None:
+def precompute(coco_root: str, split: str, masks_root: str = None, overwrite: bool = False) -> None:
     from pycocotools.coco import COCO
 
     split_dir = _SPLIT_DIR[split]
@@ -50,8 +56,9 @@ def precompute(coco_root: str, split: str, overwrite: bool = False) -> None:
     if not os.path.isfile(ann_file):
         raise FileNotFoundError(f"No existe el fichero de anotaciones: {ann_file}")
 
-    coco    = COCO(ann_file)
-    out_dir = Path(coco_root) / f"masks_{split_dir}"
+    coco     = COCO(ann_file)
+    out_base = masks_root if masks_root else coco_root
+    out_dir  = Path(out_base) / f"masks_{split_dir}"
     out_dir.mkdir(parents=True, exist_ok=True)
 
     img_ids = list(coco.imgs.keys())
@@ -86,11 +93,14 @@ def precompute(coco_root: str, split: str, overwrite: bool = False) -> None:
 
 def main() -> None:
     p = argparse.ArgumentParser(description="Pre-genera las máscaras de COCO a disco")
-    p.add_argument("--coco-root", required=True, help="Carpeta raíz de COCO")
+    p.add_argument("--coco-root", required=True, help="Carpeta raíz de COCO (imágenes + annotations)")
+    p.add_argument("--masks-root", default=None,
+                   help="Carpeta donde escribir las máscaras (def: igual que --coco-root). "
+                        "Úsala si el COCO es de solo lectura.")
     p.add_argument("--split", choices=["train", "val"], default="train")
     p.add_argument("--overwrite", action="store_true", help="Regenerar aunque ya existan")
     args = p.parse_args()
-    precompute(args.coco_root, args.split, args.overwrite)
+    precompute(args.coco_root, args.split, args.masks_root, args.overwrite)
 
 
 if __name__ == "__main__":

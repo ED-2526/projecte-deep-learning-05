@@ -98,23 +98,25 @@ class CocoSegmentationCached(Dataset):
     (0 = fondo) — 81 clases. Si las generaste con una versión antigua del script
     (category_id crudos hasta 90), bórralas y vuelve a ejecutar el script.
 
-    Estructura esperada en <root>:
-        <root>/train2017/         <root>/val2017/
-        <root>/masks_train2017/   <root>/masks_val2017/   (generadas con el script)
+    Las imágenes se leen de <root>/train2017|val2017/ y las máscaras de
+    <masks_root>/masks_train2017|masks_val2017/. Si masks_root es None, se usa root
+    (útil cuando el COCO es de solo lectura: pon masks_root en una carpeta tuya).
     """
 
     _SPLIT_DIR = {"train": "train2017", "val": "val2017"}
 
-    def __init__(self, root: str, split: str = "train", transforms=None):
+    def __init__(self, root: str, split: str = "train", transforms=None, masks_root=None):
         if split not in self._SPLIT_DIR:
             raise ValueError(f"split debe ser 'train' o 'val', no {split!r}")
         split_dir     = self._SPLIT_DIR[split]
+        masks_base    = masks_root if masks_root else root
         self.img_dir  = os.path.join(root, split_dir)
-        self.mask_dir = os.path.join(root, f"masks_{split_dir}")
+        self.mask_dir = os.path.join(masks_base, f"masks_{split_dir}")
         if not os.path.isdir(self.mask_dir):
             raise FileNotFoundError(
                 f"No existe {self.mask_dir}. Genera las máscaras primero:\n"
-                f"  python tools/precompute_coco_masks.py --coco-root {root} --split {split}"
+                f"  python tools/precompute_coco_masks.py --coco-root {root} "
+                f"--masks-root {masks_base} --split {split}"
             )
         self.mask_paths = sorted(glob(os.path.join(self.mask_dir, "*.png")))
         assert self.mask_paths, f"No se encontraron máscaras .png en {self.mask_dir}"

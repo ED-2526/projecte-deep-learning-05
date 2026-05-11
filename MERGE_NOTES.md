@@ -43,8 +43,10 @@ python quick_test.py
 python fast_train.py --data-root <ruta-dataset> --samples 500 --epochs 3
 
 # pre-generar máscaras de COCO (una sola vez, acelera mucho)
-python tools/precompute_coco_masks.py --coco-root <ruta-COCO> --split train
-python tools/precompute_coco_masks.py --coco-root <ruta-COCO> --split val
+# si el COCO es de solo lectura, escribe las máscaras en una carpeta tuya con --masks-root
+# y pon ese mismo valor en Config.MASKS_ROOT
+python tools/precompute_coco_masks.py --coco-root <ruta-COCO> --masks-root <ruta-escribible> --split val
+python tools/precompute_coco_masks.py --coco-root <ruta-COCO> --masks-root <ruta-escribible> --split train
 
 # entrenamiento completo
 python main.py --data-root <ruta-dataset> --epochs 30

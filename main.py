@@ -47,11 +47,14 @@ def construir_dataset(cfg: Config, root: str, split: str):
                                         download=True, transforms=transform)
 
     if dataset == "COCO":
-        cached_dir = os.path.join(root, f"masks_{'train2017' if split == 'train' else 'val2017'}")
+        masks_root = getattr(cfg, "MASKS_ROOT", None) or root
+        cached_dir = os.path.join(masks_root, f"masks_{'train2017' if split == 'train' else 'val2017'}")
         if os.path.isdir(cached_dir):
-            return CocoSegmentationCached(root=root, split=split, transforms=transform)
+            return CocoSegmentationCached(root=root, split=split, transforms=transform,
+                                          masks_root=masks_root)
         print(f"[main] Aviso: no hay máscaras pre-generadas en {cached_dir}; se usa "
-              f"CocoSegmentation (lento). Ejecuta tools/precompute_coco_masks.py para acelerar.")
+              f"CocoSegmentation (lento). Genera las máscaras con tools/precompute_coco_masks.py "
+              f"(usa --masks-root si el COCO es de solo lectura).")
         return CocoSegmentation(root=root, split=split, transforms=transform)
 
     raise ValueError(f"DATASET desconocido: {cfg.DATASET!r}. Usa 'VOC' o 'COCO'.")

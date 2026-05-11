@@ -24,6 +24,13 @@ class Config:
     # DATASET     = "VOC"
     # NUM_CLASSES = 21        # VOC2012: 20 clases + fondo (+ ignore_index 255 en bordes)
 
+    # Carpeta donde están / se guardan las máscaras pre-generadas de COCO (ver
+    # tools/precompute_coco_masks.py). None → usa la misma carpeta de --data-root.
+    # Si el COCO es de solo lectura (p.ej. lo descargó el profe), pon aquí una
+    # carpeta tuya con permisos de escritura, p.ej.:
+    #   MASKS_ROOT = "/home/edxnG05/coco_masks"
+    MASKS_ROOT  = None
+
     IMG_SIZE    = 256         # 256 (enunciado). Subir a 384 da más detalle pero ~2x más coste
     BATCH_SIZE  = 32          # con AMP cabe holgado en la L40S 48GB; subir si sobra VRAM
     NUM_WORKERS = 8           # procesos paralelos de carga de datos (~ #cores/3; útil hasta ~12)
