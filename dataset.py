@@ -5,6 +5,8 @@ import numpy as np
 from PIL import Image
 from torch.utils.data import Dataset
 
+from classes import COCO_CAT_ID_TO_INDEX
+
 
 class SegmentationDataset(Dataset):
     """
@@ -33,9 +35,10 @@ class SegmentationDataset(Dataset):
 class CocoSegmentation(Dataset):
     """Segmentación semántica sobre COCO derivada de anotaciones de instancias.
 
-    Cada píxel recibe el category_id de COCO (1-90); el fondo queda en 0.
-    Las instancias se superponen de mayor a menor área para que las pequeñas
-    no queden tapadas.
+    Cada píxel recibe el ÍNDICE CONTIGUO de la categoría (1..80); el fondo queda en 0.
+    Los category_id originales de COCO (1-90, no contiguos) se remapean con
+    COCO_CAT_ID_TO_INDEX → 81 clases en total. Las instancias se superponen de
+    mayor a menor área para que las pequeñas no queden tapadas.
 
     Estructura esperada en <root>:
         <root>/train2017/   <root>/val2017/
@@ -73,8 +76,11 @@ class CocoSegmentation(Dataset):
         mask = np.zeros((h, w), dtype=np.uint8)
         # orden descendente de área: las instancias pequeñas se pintan encima
         for ann in sorted(anns, key=lambda a: a["area"], reverse=True):
+            idx = COCO_CAT_ID_TO_INDEX.get(ann["category_id"])
+            if idx is None:
+                continue  # category_id no esperado (no debería pasar con instances_*.json)
             m = self.coco.annToMask(ann)
-            mask[m > 0] = ann["category_id"]  # IDs 1-90; 0 = fondo
+            mask[m > 0] = idx  # índice contiguo 1..80; 0 = fondo
 
         if self.transforms:
             image, mask = self.transforms(image, Image.fromarray(mask))
@@ -87,6 +93,10 @@ class CocoSegmentationCached(Dataset):
     Mucho más rápido que CocoSegmentation porque NO llama a pycocotools.annToMask
     en cada acceso: solo lee un PNG ya generado. Reduce drásticamente el tiempo por
     epoch cuando el cuello de botella es la generación de máscaras.
+
+    Las máscaras pre-generadas ya vienen remapeadas a índices contiguos 1..80
+    (0 = fondo) — 81 clases. Si las generaste con una versión antigua del script
+    (category_id crudos hasta 90), bórralas y vuelve a ejecutar el script.
 
     Estructura esperada en <root>:
         <root>/train2017/         <root>/val2017/

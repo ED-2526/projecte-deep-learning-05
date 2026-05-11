@@ -20,7 +20,7 @@ class Config:
     # COCO por defecto (es lo que pide el enunciado). Para usar VOC2012 (se
     # descarga solo, 21 clases) comenta las 2 líneas de COCO y descomenta las de VOC.
     DATASET     = "COCO"
-    NUM_CLASSES = 91          # COCO: 0 = fondo, 1-90 = category_id (no contiguos; 91 cubre el rango)
+    NUM_CLASSES = 81          # COCO: 0 = fondo + 80 categorías (category_id remapeados a 1..80)
     # DATASET     = "VOC"
     # NUM_CLASSES = 21        # VOC2012: 20 clases + fondo (+ ignore_index 255 en bordes)
 
@@ -56,7 +56,7 @@ class Config:
     LR_ENCODER   = 1e-5       # bajo: no destruir los pesos ImageNet de las capas descongeladas
     LR_DECODER   = 1e-4       # decoder + head se entrenan desde cero
     WEIGHT_DECAY = 1e-4
-    EPOCHS        = 50        # con la mejor loss + augmentations + scheduler, 30 suele bastar
+    EPOCHS        = 50        # ~30 ya suele bastar con la mejor loss + augmentations + scheduler
     WARMUP_EPOCHS = 2         # warmup lineal del LR antes del cosine annealing
 
     # Optimizer: "adamw" | "adam" | "sgd" | "rmsprop" | "adagrad"

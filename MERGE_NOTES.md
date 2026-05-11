@@ -30,7 +30,7 @@ con la mejor versión de cada cosa y dejando el código consistente y ejecutable
 - `SUMMARY.txt` y `training_log.txt` de `uriramos` → no incluidos (el primero tenía métricas inventadas/aspiracionales; el segundo era un mensaje de error de una ejecución fallida).
 - `LR_DECODER = 1e-2` / `LR_ENCODER = 1e-3` con SGD → demasiado agresivo; se vuelve a `1e-4` / `1e-5` con AdamW (la combinación que dio el mejor resultado del equipo, 0.6241 mIoU), apoyado en el warmup + gradient clipping.
 - `IMG_SIZE = 384` y `BATCH_SIZE = 48/64` → `IMG_SIZE = 256` (lo que pide el enunciado) y `BATCH_SIZE = 32` (con holgura en la L40S 48GB). Ambos comentados como alternativas.
-- `NUM_CLASSES = 81` → `91` (el dataset COCO asigna `category_id` 1-90 sin remapear, así que hace falta 91).
+- COCO: ahora se usan **81 clases** (0 = fondo + 80 categorías). Los `category_id` originales de COCO (1-90, no contiguos) se **remapean** a índices contiguos 1..80 con `classes.COCO_CAT_ID_TO_INDEX`. El remapeo lo aplican `CocoSegmentation` y `tools/precompute_coco_masks.py`. ⚠️ Si ya habías pre-generado máscaras con la versión anterior (IDs crudos hasta 90), bórralas (`masks_train2017/`, `masks_val2017/`) y vuelve a ejecutar el script.
 - `main.py`/`evaluate.py` ahora despachan VOC vs COCO con `construir_dataset(...)` (antes `main.py` solo soportaba VOC aunque el enunciado pide COCO).
 - `registre_iou_per_classe` usa `get_classes(cfg.DATASET)` (antes hardcodeaba las 21 clases de VOC → fallaba con COCO).
 
