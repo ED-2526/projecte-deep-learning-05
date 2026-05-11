@@ -28,7 +28,7 @@ assert len(VOC_COLORMAP) == 21
 
 # --- COCO (índice 0 = fondo, índices 1-90 = category_id de COCO) ---
 # Los IDs de COCO no son contiguos; las posiciones sin categoría se marcan con "N/A".
-COCO_CLASSES = (
+COCO_CLASSES_91 = (
     "background",
     "person", "bicycle", "car", "motorcycle", "airplane", "bus", "train",
     "truck", "boat", "traffic light", "fire hydrant", "N/A", "stop sign",
@@ -45,7 +45,17 @@ COCO_CLASSES = (
     "N/A", "book", "clock", "vase", "scissors", "teddy bear", "hair drier",
     "toothbrush",
 )
-assert len(COCO_CLASSES) == 91
+assert len(COCO_CLASSES_91) == 91
+
+COCO_CLASSES = tuple(name for name in COCO_CLASSES_91 if name != "N/A")
+assert len(COCO_CLASSES) == 81
+
+COCO_CATID_TO_INDEX = {
+    cat_id: new_id
+    for new_id, cat_id in enumerate(
+        cat_id for cat_id, name in enumerate(COCO_CLASSES_91) if name != "N/A"
+    )
+}
 
 
 def _gen_colormap(n: int):
@@ -66,7 +76,7 @@ def _gen_colormap(n: int):
     return colormap
 
 
-COCO_COLORMAP = _gen_colormap(91)
+COCO_COLORMAP = _gen_colormap(len(COCO_CLASSES))
 
 
 def get_classes(dataset: str) -> tuple:

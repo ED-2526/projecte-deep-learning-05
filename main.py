@@ -11,7 +11,7 @@ from torch.utils.data import DataLoader, Subset, Dataset
 from PIL import Image
 import pycocotools.mask as maskUtils
 
-from classes import VOC_CLASSES
+from classes import VOC_CLASSES, get_classes
 from config import Config
 from engine import entrenar_una_epoca, validar
 from losses import SegmentationLoss
@@ -36,13 +36,19 @@ def establir_llavor(seed: int) -> None:
 
 class COCOSegmentationWrapper(Dataset):
     """
-    WRAPPER OPTIMIZADO para COCO. Converteix annotations RLE a masks PIL.
+    WRAPPER OPTIMIZADO para COCO. Convierte annotations RLE/poligonal a masks PIL.
     Con cache=True, precachea todas las masks al init (más rápido durante training).
     """
     def __init__(self, coco_dataset, transforms=None, cache_masks=False):
         self.coco_dataset = coco_dataset
         self.transforms = transforms
         self._mask_cache = {} if cache_masks else None
+        self.coco = getattr(coco_dataset, "coco", None)
+        self.cat_id_map = None
+        if self.coco is not None:
+            cat_ids = sorted(self.coco.getCatIds())
+            # Mapear COCO 1..90 (con huecos) a 1..80 contiguos, manteniendo 0 como fondo.
+            self.cat_id_map = {cat_id: i + 1 for i, cat_id in enumerate(cat_ids)}
         
     def __len__(self):
         return len(self.coco_dataset)
@@ -65,24 +71,30 @@ class COCOSegmentationWrapper(Dataset):
         return image, mask
     
     def _build_mask(self, image, target):
-        """Build segmentation mask from COCO RLE annotations."""
-        if not target:
-            H, W = image.size[1], image.size[0]
-            return Image.fromarray(np.zeros((H, W), dtype=np.uint8))
-        
+        """Build segmentation mask from COCO segmentation annotations."""
         H, W = image.size[1], image.size[0]
         mask = np.zeros((H, W), dtype=np.uint8)
         
         for ann in target:
-            if "segmentation" not in ann:
+            segmentation = ann.get("segmentation")
+            if segmentation is None:
                 continue
-            segmentation = ann["segmentation"]
-            if not isinstance(segmentation, dict):  # Solo RLE
-                continue
-            
             try:
-                category_id = min(ann.get("category_id", 0), 255)  # Cap at 255 for uint8
-                rle_mask = maskUtils.decode(segmentation)
+                if isinstance(segmentation, dict):
+                    rle = segmentation
+                elif isinstance(segmentation, list):
+                    rle = maskUtils.frPyObjects(segmentation, H, W)
+                else:
+                    continue
+
+                rle_mask = maskUtils.decode(rle)
+                if rle_mask.ndim == 3:
+                    rle_mask = np.any(rle_mask, axis=2).astype(np.uint8)
+
+                category_id = ann.get("category_id", 0)
+                if self.cat_id_map is not None:
+                    category_id = self.cat_id_map.get(category_id, category_id)
+                category_id = min(category_id, 255)
                 mask[rle_mask > 0] = category_id
             except Exception:
                 pass
@@ -153,14 +165,14 @@ def construir_optimitzador(model: UNet, cfg: Config) -> torch.optim.Optimizer:
     raise ValueError(f"Optimizer desconocido: {cfg.OPTIMIZER!r}. Usa: adamw | adam | sgd | rmsprop | adagrad")
 
 
-def registre_iou_per_classe(iou_per_classe, prefix="val_iou"):
+def registre_iou_per_classe(iou_per_classe, class_names, prefix="val_iou"):
     """
     EXPLICACIÓ SIMPLE: Crea un diccionari amb les puntuacions d'IoU (precisió) per a cada classe.
     Útil per a veure quines classes el model aprèn bé i quines no.
     El diccionari es veu bé en el sistema de logging Wandb.
     """
     return {f"{prefix}/{name}": float(iou)
-            for name, iou in zip(VOC_CLASSES, iou_per_classe)}
+            for name, iou in zip(class_names, iou_per_classe)}
 
 
 def principal(args: argparse.Namespace) -> None:
@@ -175,10 +187,13 @@ def principal(args: argparse.Namespace) -> None:
     cfg = Config()
     establir_llavor(cfg.SEED)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    print(f"[main] device = {device}  |  dataset = {cfg.DATASET}  |  num_classes = {cfg.NUM_CLASSES}")
+    class_names = get_classes(cfg.DATASET)
+    num_classes = len(class_names)
+    if cfg.NUM_CLASSES != num_classes:
+        print(f"[main] WARNING: cfg.NUM_CLASSES={cfg.NUM_CLASSES} no coincide con clases reales={num_classes}. Usando {num_classes}.")
+    print(f"[main] device = {device}  |  dataset = {cfg.DATASET}  |  num_classes = {num_classes}")
 
     # --- data (COCO2017) ---
-    num_classes = 80  # COCO has 80 object classes
     # Cache val masks (5k imágenes = ~1.5GB RAM pero vale la pena)
     # Train masks: demasiadas (118k), solo usar transforms
     train_ds = construir_coco(args.data_root, "train", cfg.IMG_SIZE, cache_masks=False)
@@ -195,7 +210,7 @@ def principal(args: argparse.Namespace) -> None:
     val_loader   = DataLoader(val_ds,   batch_size=cfg.BATCH_SIZE,
                               shuffle=False, num_workers=cfg.NUM_WORKERS, pin_memory=False)
 
-    model = UNet(num_classes=cfg.NUM_CLASSES, backbone=cfg.BACKBONE, pretrained=cfg.PRETRAINED).to(device)
+    model = UNet(num_classes=num_classes, backbone=cfg.BACKBONE, pretrained=cfg.PRETRAINED).to(device)
 
     freeze_map = {
         "layer0": cfg.FREEZE_LAYER0,
@@ -225,7 +240,7 @@ def principal(args: argparse.Namespace) -> None:
     epochs = args.epochs if args.epochs is not None else cfg.EPOCHS
     optimizer = construir_optimitzador(model, cfg)
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=epochs)
-    metrics   = SegmentationMetrics(num_classes=cfg.NUM_CLASSES, ignore_index=cfg.IGNORE_INDEX)
+    metrics   = SegmentationMetrics(num_classes=num_classes, ignore_index=cfg.IGNORE_INDEX)
 
     use_wandb = not args.no_wandb
     if use_wandb:
@@ -235,7 +250,7 @@ def principal(args: argparse.Namespace) -> None:
             cfg.FREEZE_LAYER3, cfg.FREEZE_LAYER4
         ]) if f]
         freeze_str = f"freeze({'_'.join(frozen_layers)})" if frozen_layers else "nofrozen"
-        run_name = f"coco-{cfg.BATCH_SIZE}-{cfg.BACKBONE}"
+        run_name = f"2.0coco-{cfg.BATCH_SIZE}-{cfg.BACKBONE}"
         wandb.init(
             project="COCO",
             entity="1671799-uab",
@@ -262,7 +277,7 @@ def principal(args: argparse.Namespace) -> None:
             "lr_encoder":  optimizer.param_groups[0]["lr"] if len(optimizer.param_groups) > 1 else 0.0,
             "lr_decoder":  optimizer.param_groups[-1]["lr"],
         }
-        log.update(registre_iou_per_classe(val_metrics["IoU_per_class"]))
+        log.update(registre_iou_per_classe(val_metrics["IoU_per_class"], class_names))
 
         main_keys = ("epoch", "train_loss", "val_loss", "val_mIoU")
         line = " | ".join(
