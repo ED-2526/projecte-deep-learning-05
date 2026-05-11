@@ -24,7 +24,14 @@ class Config:
     # NUM_CLASSES = 91          # COCO stuff+things; ajusta según el subset que uses
     IMG_SIZE    = 256
     BATCH_SIZE  = 8
-    NUM_WORKERS = 4
+    NUM_WORKERS = 8           # procesos paralelos de carga de datos (~ #cores/3; útil hasta ~12)
+
+    # --- Optimización de velocidad de entrenamiento ---
+    USE_AMP         = True    # mixed precision fp16 (autocast + GradScaler): ~2x en GPUs modernas
+    COMPILE         = True    # torch.compile: 1.2-1.8x extra. Ponlo False si da problemas
+    CHANNELS_LAST   = True    # memory format channels_last: convoluciones más rápidas
+    CUDNN_BENCHMARK = True    # cuDNN elige el algoritmo de conv más rápido (input fijo 256x256)
+    PREFETCH_FACTOR = 4       # cuántos batches precarga cada worker por adelantado
 
     # Modelo
     BACKBONE = "resnet152"   # resnet18 | resnet34 | resnet50 | resnet101 | resnet152

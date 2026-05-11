@@ -94,6 +94,8 @@ def principal(args: argparse.Namespace) -> None:
     """
     cfg = Config()
     establir_llavor(cfg.SEED)
+    if getattr(cfg, "CUDNN_BENCHMARK", False):
+        torch.backends.cudnn.benchmark = True   # input fijo 256x256 → cuDNN puede autotunear
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"[main] device = {device}  |  dataset = {cfg.DATASET}  |  num_classes = {cfg.NUM_CLASSES}")
 
@@ -108,10 +110,12 @@ def principal(args: argparse.Namespace) -> None:
         val_ds   = train_ds
         print(f"[main] OVERFIT mode on {args.overfit} samples")
 
-    train_loader = DataLoader(train_ds, batch_size=cfg.BATCH_SIZE,
-                              shuffle=True,  num_workers=cfg.NUM_WORKERS, pin_memory=True)
-    val_loader   = DataLoader(val_ds,   batch_size=cfg.BATCH_SIZE,
-                              shuffle=False, num_workers=cfg.NUM_WORKERS, pin_memory=True)
+    loader_kwargs = dict(num_workers=cfg.NUM_WORKERS, pin_memory=True)
+    if cfg.NUM_WORKERS > 0:
+        loader_kwargs.update(persistent_workers=True,
+                             prefetch_factor=getattr(cfg, "PREFETCH_FACTOR", 2))
+    train_loader = DataLoader(train_ds, batch_size=cfg.BATCH_SIZE, shuffle=True,  **loader_kwargs)
+    val_loader   = DataLoader(val_ds,   batch_size=cfg.BATCH_SIZE, shuffle=False, **loader_kwargs)
 
     model = UNet(num_classes=cfg.NUM_CLASSES, backbone=cfg.BACKBONE, pretrained=cfg.PRETRAINED).to(device)
 
@@ -134,6 +138,27 @@ def principal(args: argparse.Namespace) -> None:
     n_params    = sum(p.numel() for p in model.parameters())
     n_trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)
     print(f"[main] U-Net params: {n_params/1e6:.2f}M total | {n_trainable/1e6:.2f}M entrenables")
+
+    # --- optimizaciones de velocidad (solo tienen efecto en GPU) ---
+    use_amp       = getattr(cfg, "USE_AMP", False) and device.type == "cuda"
+    channels_last = getattr(cfg, "CHANNELS_LAST", False) and device.type == "cuda"
+    if channels_last:
+        model = model.to(memory_format=torch.channels_last)
+        print("[main] channels_last activado")
+    scaler = torch.amp.GradScaler("cuda", enabled=use_amp)
+    if use_amp:
+        print("[main] AMP (mixed precision fp16) activado")
+
+    # torch.compile acelera forward/backward. Mantenemos `model` sin compilar como
+    # referencia para guardar el checkpoint (evita el prefijo '_orig_mod.' en el state_dict).
+    # No se compila en modo --overfit: la compilación inicial es lenta y no compensa con pocos pasos.
+    train_model = model
+    if getattr(cfg, "COMPILE", False) and device.type == "cuda" and args.overfit == 0:
+        try:
+            train_model = torch.compile(model)
+            print("[main] torch.compile activado")
+        except Exception as e:
+            print(f"[main] torch.compile no disponible ({e}); se usa el modelo sin compilar")
 
     criterion = SegmentationLoss(
         ce_weight=cfg.CE_WEIGHT,
@@ -166,8 +191,11 @@ def principal(args: argparse.Namespace) -> None:
     best_miou = 0.0
 
     for epoch in range(epochs):
-        train_loss = entrenar_una_epoca(model, train_loader, optimizer, criterion, device, epoch=epoch)
-        val_loss, val_metrics = validar(model, val_loader, criterion, metrics, device, epoch=epoch)
+        train_loss = entrenar_una_epoca(train_model, train_loader, optimizer, criterion, device,
+                                        scaler=scaler, use_amp=use_amp,
+                                        channels_last=channels_last, epoch=epoch)
+        val_loss, val_metrics = validar(train_model, val_loader, criterion, metrics, device,
+                                        use_amp=use_amp, channels_last=channels_last, epoch=epoch)
         scheduler.step()
 
         log = {

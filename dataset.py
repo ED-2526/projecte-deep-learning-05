@@ -79,3 +79,46 @@ class CocoSegmentation(Dataset):
         if self.transforms:
             image, mask = self.transforms(image, Image.fromarray(mask))
         return image, mask
+
+
+class CocoSegmentationCached(Dataset):
+    """COCO con máscaras pre-generadas a disco (ver tools/precompute_coco_masks.py).
+
+    Mucho más rápido que CocoSegmentation porque NO llama a pycocotools.annToMask
+    en cada acceso: solo lee un PNG ya generado. Reduce drásticamente el tiempo por
+    epoch cuando el cuello de botella es la generación de máscaras.
+
+    Estructura esperada en <root>:
+        <root>/train2017/         <root>/val2017/
+        <root>/masks_train2017/   <root>/masks_val2017/   (generadas con el script)
+    """
+
+    _SPLIT_DIR = {"train": "train2017", "val": "val2017"}
+
+    def __init__(self, root: str, split: str = "train", transforms=None):
+        if split not in self._SPLIT_DIR:
+            raise ValueError(f"split debe ser 'train' o 'val', no {split!r}")
+        split_dir     = self._SPLIT_DIR[split]
+        self.img_dir  = os.path.join(root, split_dir)
+        self.mask_dir = os.path.join(root, f"masks_{split_dir}")
+        if not os.path.isdir(self.mask_dir):
+            raise FileNotFoundError(
+                f"No existe {self.mask_dir}. Genera las máscaras primero:\n"
+                f"  python tools/precompute_coco_masks.py --coco-root {root} --split {split}"
+            )
+        self.mask_paths = sorted(glob(os.path.join(self.mask_dir, "*.png")))
+        assert self.mask_paths, f"No se encontraron máscaras .png en {self.mask_dir}"
+        self.transforms = transforms
+
+    def __len__(self):
+        return len(self.mask_paths)
+
+    def __getitem__(self, idx):
+        mask_path = self.mask_paths[idx]
+        stem      = os.path.splitext(os.path.basename(mask_path))[0]
+        img_path  = os.path.join(self.img_dir, f"{stem}.jpg")
+        image     = Image.open(img_path).convert("RGB")
+        mask      = Image.open(mask_path)
+        if self.transforms:
+            image, mask = self.transforms(image, mask)
+        return image, mask
