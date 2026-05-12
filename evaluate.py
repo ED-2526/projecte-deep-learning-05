@@ -1,18 +1,39 @@
-"""Avaluació final + visualització qualitativa.
+"""Avaluació final + visualització qualitativa (VOC2012 / COCO).
 
-Carrega un checkpoint, avalua el mIoU sobre el split de validació i guarda una
-figura amb N exemples (imatge | ground truth | predicció).
+Carrega un checkpoint, calcula el mIoU sobre el split de validació i guarda una
+figura amb N exemples:
+
+    imatge original | ground truth | predicció del model | encerts / errors
+
+El **backbone** i el **nombre de classes** es llegeixen del propi checkpoint (els
+guarda main.py dins de `ckpt["config"]`), així funciona encara que `config.py`
+hagi canviat des de l'entrenament (p.ex. tornar a posar resnet50 després d'haver
+entrenat amb resnet152). Si el checkpoint és antic i no els porta, s'usa config.py.
+
+Per a COCO, els exemples de la figura NO són les N primeres imatges (moltes de COCO
+són gairebé tot fons i donarien una figura pobra): es mostregen unes quantes imatges
+del split de validació, es puntua cada una per quant primer pla / quantes classes té,
+i es trien les millors. És determinista (--seed).
 
 Ús:
-    python evaluate.py --ckpt checkpoints/best.pt --num-samples 8
-    python evaluate.py --ckpt checkpoints/best.pt --data-root ./data --no-figure
+    # mètriques + figura (8 exemples) sobre COCO val
+    python evaluate.py --ckpt checkpoints/best.pt --data-root /home/datasets/coco --num-samples 8
+
+    # només la figura, amb nom propi
+    python evaluate.py --ckpt checkpoints/best.pt --data-root /home/datasets/coco \
+        --no-metrics --num-samples 6 --out docs/qual_r152_frozen.png
+
+    # només mètriques (sense generar imatge)
+    python evaluate.py --ckpt checkpoints/best.pt --data-root /home/datasets/coco --no-figure
 """
 import argparse
+import random
 from pathlib import Path
 
 import matplotlib.pyplot as plt
 import numpy as np
 import torch
+from matplotlib.patches import Patch
 from torch.utils.data import DataLoader
 
 from classes import get_classes, get_colormap
@@ -25,11 +46,11 @@ from models.unet import UNet
 from transforms import PairedTransform
 
 
-def coloritzar_mascara(mask: np.ndarray, colormap: list) -> np.ndarray:
+# ───────────────────────────────────────── helpers visuals ─────────────────────────────────
+def coloritzar_mascara(mask: np.ndarray, colormap) -> np.ndarray:
     """
-    EXPLICACIÓ SIMPLE: Converteix una màscara en escala de grisos (números) a una imatge colorida RGB.
-    Cada número de classe rep un color diferent perquè sigui fàcil de veure visualment.
-    Els píxels ignorats es posen en blanc.
+    EXPLICACIÓ SIMPLE: Converteix una màscara d'índexs de classe (números) a una imatge RGB.
+    Cada classe rep un color del colormap; els píxels ignorats (255, només a VOC) es pinten blancs.
     """
     rgb = np.zeros((*mask.shape, 3), dtype=np.uint8)
     for cls_idx, color in enumerate(colormap):
@@ -38,11 +59,23 @@ def coloritzar_mascara(mask: np.ndarray, colormap: list) -> np.ndarray:
     return rgb
 
 
+def mapa_encerts(gt: np.ndarray, pred: np.ndarray) -> np.ndarray:
+    """
+    EXPLICACIÓ SIMPLE: Imatge que ressalta on el model encerta i on falla respecte el ground truth.
+    Verd = píxel correcte, vermell = píxel equivocat, blanc = píxel ignorat (255, VOC).
+    En COCO la majoria de píxels són fons; si surten gairebé tot verd, és bon senyal.
+    """
+    valid = gt != 255
+    out = np.zeros((*gt.shape, 3), dtype=np.uint8)
+    out[valid & (pred == gt)] = (0, 170, 0)
+    out[valid & (pred != gt)] = (220, 0, 0)
+    out[~valid] = (255, 255, 255)
+    return out
+
+
 def denormalitzar(image_t: torch.Tensor) -> np.ndarray:
     """
-    EXPLICACIÓ SIMPLE: Desfa la normalització que va fer el model.
-    Les imatges es normalitzen al principi perquè el model funcioni millor.
-    Això les torna a convertir a colors normals que podem veure.
+    EXPLICACIÓ SIMPLE: Desfà la normalització ImageNet (mitjana/desviació) per poder veure la imatge.
     """
     mean = torch.tensor(PairedTransform.IMAGENET_MEAN).view(3, 1, 1)
     std  = torch.tensor(PairedTransform.IMAGENET_STD).view(3, 1, 1)
@@ -51,107 +84,183 @@ def denormalitzar(image_t: torch.Tensor) -> np.ndarray:
     return (img * 255).astype(np.uint8)
 
 
+def _to_np_mask(mask) -> np.ndarray:
+    """La màscara pot venir com a Tensor (cas normal) o PIL/ndarray."""
+    return mask.numpy() if torch.is_tensor(mask) else np.asarray(mask)
+
+
+def triar_exemples(dataset, num_samples: int, scan_limit: int = 300, seed: int = 0):
+    """
+    EXPLICACIÓ SIMPLE: Tria quins índexs del dataset surten a la figura.
+    Mostreja fins a `scan_limit` imatges, puntua cada una per (nº de classes diferents en
+    primer pla) + (fracció de píxels en primer pla, topada a 0.5) i retorna els `num_samples`
+    millors. Així evitem que la figura de COCO surti plena d'imatges quasi tot fons.
+    Determinista: amb el mateix `seed` sempre tria els mateixos.
+    """
+    n = len(dataset)
+    if n <= num_samples:
+        return list(range(n))
+    rng  = random.Random(seed)
+    cand = rng.sample(range(n), min(scan_limit, n))
+    puntuats = []
+    for i in cand:
+        _, mask = dataset[i]
+        m  = _to_np_mask(mask)
+        fg = m[(m != 0) & (m != 255)]
+        if fg.size == 0:
+            continue
+        score = len(np.unique(fg)) + min(fg.size / m.size, 0.5)
+        puntuats.append((score, i))
+    if not puntuats:                       # cap candidat amb primer pla → els primers
+        return list(range(num_samples))
+    puntuats.sort(reverse=True)
+    return sorted(i for _, i in puntuats[:num_samples])
+
+
 @torch.no_grad()
-def fer_figura(model, dataset, device, num_samples, colormap, out_path):
+def fer_figura(model, dataset, device, idxs, classes, colormap, out_path):
     """
-    EXPLICACIÓ SIMPLE: Crea una figura (imatge) que mostra:
-    - Primera columna: imatge original
-    - Segona columna: màscara correcta (ground truth)
-    - Tercera columna: predicció del model
-    Això ajuda a veure visualment com de bo és el model.
+    EXPLICACIÓ SIMPLE: Crea i guarda la figura amb una fila per exemple i 4 columnes:
+    input | ground truth | predicció | encerts/errors. A sota, una llegenda amb les classes
+    de primer pla que apareixen als exemples (índex + nom + color), perquè s'entenguin els colors.
     """
-    fig, axes = plt.subplots(num_samples, 3, figsize=(9, 3 * num_samples))
-    if num_samples == 1:
+    n = len(idxs)
+    fig, axes = plt.subplots(n, 4, figsize=(12, 3 * n))
+    if n == 1:
         axes = axes[None, :]
 
     model.eval()
-    for i in range(num_samples):
-        image, mask = dataset[i]
+    classes_presents = set()
+    for row, idx in enumerate(idxs):
+        image, mask = dataset[idx]
+        gt   = _to_np_mask(mask)
         pred = model(image.unsqueeze(0).to(device))[0].argmax(dim=0).cpu().numpy()
 
-        axes[i, 0].imshow(denormalitzar(image))
-        axes[i, 0].set_title("input" if i == 0 else "")
-        axes[i, 1].imshow(coloritzar_mascara(mask.numpy(), colormap))
-        axes[i, 1].set_title("ground truth" if i == 0 else "")
-        axes[i, 2].imshow(coloritzar_mascara(pred, colormap))
-        axes[i, 2].set_title("prediction" if i == 0 else "")
-        for ax in axes[i]:
-            ax.axis("off")
+        classes_presents.update(int(c) for c in np.unique(gt[gt != 255]) if c != 0)
+        classes_presents.update(int(c) for c in np.unique(pred) if c != 0)
 
-    fig.tight_layout()
+        cols = (
+            ("input",            denormalitzar(image)),
+            ("ground truth",     coloritzar_mascara(gt, colormap)),
+            ("prediction",       coloritzar_mascara(pred, colormap)),
+            ("encerts / errors", mapa_encerts(gt, pred)),
+        )
+        for c, (title, im) in enumerate(cols):
+            axes[row, c].imshow(im)
+            axes[row, c].set_title(title if row == 0 else "")
+            axes[row, c].axis("off")
+
+    handles = [
+        Patch(facecolor=np.array(colormap[c]) / 255.0, edgecolor="k",
+              label=f"{c}: {classes[c] if c < len(classes) else c}")
+        for c in sorted(classes_presents)
+    ]
+    if handles:
+        fig.legend(handles=handles, loc="lower center", frameon=False,
+                   ncol=min(6, len(handles)), fontsize=8, bbox_to_anchor=(0.5, -0.01))
+
+    fig.tight_layout(rect=(0, 0.04, 1, 1))
+    out_path = Path(out_path)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(out_path, dpi=120, bbox_inches="tight")
     plt.close(fig)
-    print(f"[evaluate] figure saved to {out_path}")
+    print(f"[evaluate] figura guardada a {out_path}  ({n} exemples; índexs {idxs})")
 
 
-def carregar_checkpoint(model, ckpt_path):
+# ───────────────────────────────────────── checkpoint ──────────────────────────────────────
+def carregar_checkpoint(ckpt_path: str):
     """
-    EXPLICACIÓ SIMPLE: Carrega els pesos guardats d'un model preentrenat.
-    Els pesos són els paràmetres que va aprendre el model durant l'entrenament.
-    Això permet usar un model ja entrenat sense haver de tornar a entrenar.
+    EXPLICACIÓ SIMPLE: Llegeix el fitxer del checkpoint i en treu:
+    - els pesos del model (state_dict), netejant el prefix '_orig_mod.' que afegeix torch.compile
+    - la config que es va guardar a l'entrenament (backbone, nº classes, dataset...) si hi és
     """
     ckpt = torch.load(ckpt_path, map_location="cpu")
-    state_dict = ckpt["model_state_dict"] if "model_state_dict" in ckpt else ckpt
-    model.load_state_dict(state_dict)
-    if "mIoU" in ckpt:
-        print(f"[evaluate] loaded checkpoint @ epoch {ckpt.get('epoch', '?')} (mIoU={ckpt['mIoU']:.4f})")
+    if isinstance(ckpt, dict) and "model_state_dict" in ckpt:
+        state_dict = ckpt["model_state_dict"]
+        saved_cfg  = ckpt.get("config", {}) or {}
+        if "mIoU" in ckpt:
+            print(f"[evaluate] checkpoint @ epoch {ckpt.get('epoch', '?')}  "
+                  f"(mIoU guardat = {ckpt['mIoU']:.4f})")
+    else:                                  # checkpoint "pelat": només el state_dict
+        state_dict, saved_cfg = ckpt, {}
+    state_dict = {k[len("_orig_mod."):] if k.startswith("_orig_mod.") else k: v
+                  for k, v in state_dict.items()}
+    return state_dict, saved_cfg
 
 
+# ───────────────────────────────────────── principal ───────────────────────────────────────
 def principal(args):
     """
-    EXPLICACIÓ SIMPLE: Funció principal per avaluar el model.
-    1. Carrega el model entrenat
-    2. Carrega les dades de validació
-    3. Calcula quina precisió té el model
-    4. Mostra les mètriques per classe
-    5. Crea una figura amb exemples visuals
+    EXPLICACIÓ SIMPLE: Avalua un model entrenat.
+    1. Llegeix el checkpoint (i d'allà backbone + nº classes + dataset).
+    2. Reconstrueix la U-Net i hi carrega els pesos.
+    3. (si no --no-metrics) calcula mIoU i IoU per classe sobre el split de validació.
+    4. (si no --no-figure) genera la figura qualitativa input | GT | pred | encerts.
     """
     cfg = Config()
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    num_classes = cfg.NUM_CLASSES
-    print(f"[evaluate] dataset = {cfg.DATASET}  |  num_classes = {num_classes}")
+    device = torch.device(args.device) if args.device else \
+             torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    val_ds     = construir_dataset(cfg, args.data_root, "val")
-    val_loader = DataLoader(val_ds, batch_size=cfg.BATCH_SIZE,
-                            shuffle=False, num_workers=cfg.NUM_WORKERS, pin_memory=True)
+    state_dict, saved_cfg = carregar_checkpoint(args.ckpt)
+    backbone     = saved_cfg.get("BACKBONE",    cfg.BACKBONE)
+    num_classes  = saved_cfg.get("NUM_CLASSES", cfg.NUM_CLASSES)
+    dataset_name = saved_cfg.get("DATASET",     cfg.DATASET)
+    print(f"[evaluate] device = {device}  |  dataset = {dataset_name}  |  "
+          f"backbone = {backbone}  |  num_classes = {num_classes}")
+    if (backbone, num_classes) != (cfg.BACKBONE, cfg.NUM_CLASSES):
+        print(f"[evaluate] (config.py actual diu backbone={cfg.BACKBONE}, "
+              f"num_classes={cfg.NUM_CLASSES}; faig servir els valors del checkpoint)")
 
-    model = UNet(num_classes=num_classes, backbone=cfg.BACKBONE, pretrained=False).to(device)
-    carregar_checkpoint(model, args.ckpt)
+    val_ds = construir_dataset(cfg, args.data_root, "val")
 
-    criterion = SegmentationLoss(focal_weight=cfg.FOCAL_WEIGHT, dice_weight=cfg.DICE_WEIGHT,
-                                 gamma=getattr(cfg, "FOCAL_GAMMA", 2.0),
-                                 ignore_index=cfg.IGNORE_INDEX)
-    metrics   = SegmentationMetrics(num_classes=num_classes, ignore_index=cfg.IGNORE_INDEX)
-    val_loss, val_metrics = validar(model, val_loader, criterion, metrics, device)
+    model = UNet(num_classes=num_classes, backbone=backbone, pretrained=False).to(device)
+    model.load_state_dict(state_dict)
+    model.eval()
 
-    classes  = get_classes(cfg.DATASET)
-    colormap = get_colormap(cfg.DATASET)
+    classes  = get_classes(dataset_name)
+    colormap = get_colormap(dataset_name)
 
-    print(f"\n=== {cfg.DATASET} val results ===")
-    print(f"val_loss : {val_loss:.4f}")
-    print(f"mIoU     : {val_metrics['mIoU']:.4f}")
-    print(f"\nIoU per class:")
-    iou = val_metrics["IoU_per_class"]
-    for name, v in sorted(zip(classes, iou), key=lambda x: x[1]):
-        print(f"  {name:<20} {v:.4f}")
+    if not args.no_metrics:
+        val_loader = DataLoader(val_ds, batch_size=cfg.BATCH_SIZE, shuffle=False,
+                                num_workers=cfg.NUM_WORKERS, pin_memory=True)
+        criterion = SegmentationLoss(focal_weight=cfg.FOCAL_WEIGHT, dice_weight=cfg.DICE_WEIGHT,
+                                     gamma=getattr(cfg, "FOCAL_GAMMA", 2.0),
+                                     ignore_index=cfg.IGNORE_INDEX)
+        metrics = SegmentationMetrics(num_classes=num_classes, ignore_index=cfg.IGNORE_INDEX)
+        val_loss, val_metrics = validar(model, val_loader, criterion, metrics, device)
+
+        iou = val_metrics["IoU_per_class"]
+        print(f"\n=== {dataset_name} val ===")
+        print(f"val_loss : {val_loss:.4f}")
+        print(f"mIoU     : {val_metrics['mIoU']:.4f}   (mitjana sobre les classes presents al GT)")
+        print(f"\nIoU per classe (ascendent; 0.0000 ≈ classe absent o mai predita):")
+        for name, v in sorted(zip(classes, iou), key=lambda x: x[1]):
+            print(f"  {name:<22} {v:.4f}")
 
     if not args.no_figure:
-        out_dir  = Path("docs"); out_dir.mkdir(exist_ok=True)
-        out_path = out_dir / "qualitative_results.png"
-        fer_figura(model, val_ds, device, args.num_samples, colormap, out_path)
+        idxs = triar_exemples(val_ds, args.num_samples, scan_limit=args.scan_limit, seed=args.seed)
+        fer_figura(model, val_ds, device, idxs, classes, colormap, args.out)
 
 
 def analitzar_arguments():
     """
-    EXPLICACIÓ SIMPLE: Llegeix els arguments de la línia de comandes per a evaluate.py.
-    Els arguments permeten especificar quin checkpoint carregar i com mostrar resultats.
+    EXPLICACIÓ SIMPLE: Arguments de línia de comandes per a evaluate.py.
     """
-    p = argparse.ArgumentParser(description="Evaluate a trained U-Net checkpoint")
-    p.add_argument("--ckpt",        type=str, default="checkpoints/best.pt")
-    p.add_argument("--data-root",   type=str, default="./data")
-    p.add_argument("--num-samples", type=int, default=8)
-    p.add_argument("--no-figure",   action="store_true",
-                   help="Skip the qualitative figure (just print metrics)")
+    p = argparse.ArgumentParser(description="Avalua un checkpoint U-Net (VOC2012 / COCO)")
+    p.add_argument("--ckpt",        type=str, default="checkpoints/best.pt",
+                   help="Ruta del checkpoint a avaluar")
+    p.add_argument("--data-root",   type=str, default="./data",
+                   help="Arrel del dataset (carpeta arrel de COCO si DATASET='COCO')")
+    p.add_argument("--num-samples", type=int, default=8, help="Nº d'exemples a la figura")
+    p.add_argument("--out",         type=str, default="docs/qualitative_results.png",
+                   help="Ruta de sortida de la figura")
+    p.add_argument("--scan-limit",  type=int, default=300,
+                   help="Quantes imatges de val es mostregen per triar les més variades "
+                        "(baixa-ho si val no té màscares pre-generades i va lent)")
+    p.add_argument("--seed",        type=int, default=0, help="Llavor per triar els exemples")
+    p.add_argument("--device",      type=str, default=None, help="cuda | cpu (auto si no es passa)")
+    p.add_argument("--no-figure",   action="store_true", help="No generar la figura (només mètriques)")
+    p.add_argument("--no-metrics",  action="store_true", help="No calcular mIoU (només la figura)")
     return p.parse_args()
 
 
