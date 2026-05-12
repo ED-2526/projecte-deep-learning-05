@@ -29,7 +29,7 @@ class Config:
     # Si el COCO es de solo lectura (p.ej. lo descargó el profe), pon aquí una
     # carpeta tuya con permisos de escritura, p.ej.:
     #   MASKS_ROOT = "/home/edxnG05/coco_masks"
-    MASKS_ROOT  = None
+    MASKS_ROOT = "/home/edxnG05/coco_masks"
 
     IMG_SIZE    = 256         # 256 (enunciado). Subir a 384 da más detalle pero ~2x más coste
     BATCH_SIZE  = 32          # con AMP cabe holgado en la L40S 48GB; subir si sobra VRAM
@@ -44,7 +44,7 @@ class Config:
     GRAD_CLIP_NORM  = 1.0     # recorte de gradiente (estabilidad con LR altos / capas descongeladas)
 
     # ── Modelo ────────────────────────────────────────────────────────────────
-    BACKBONE   = "resnet50"   # resnet18 | resnet34 | resnet50 | resnet101 | resnet152
+    BACKBONE   = "resnet152"   # resnet18 | resnet34 | resnet50 | resnet101 | resnet152
     PRETRAINED = True
 
     # Congelación del encoder capa a capa (True = congelada, False = entrenable):
@@ -56,8 +56,8 @@ class Config:
     FREEZE_LAYER0 = True
     FREEZE_LAYER1 = True
     FREEZE_LAYER2 = True
-    FREEZE_LAYER3 = False     # descongelada: las capas semánticas necesitan adaptarse a la tarea
-    FREEZE_LAYER4 = False     # descongelada: ídem
+    FREEZE_LAYER3 = True    # descongelada: las capas semánticas necesitan adaptarse a la tarea
+    FREEZE_LAYER4 = True     # descongelada: ídem
 
     # ── Entrenamiento ─────────────────────────────────────────────────────────
     LR_ENCODER   = 1e-5       # bajo: no destruir los pesos ImageNet de las capas descongeladas
