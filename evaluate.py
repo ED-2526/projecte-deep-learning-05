@@ -223,9 +223,24 @@ def principal(args):
     if not args.no_metrics:
         val_loader = DataLoader(val_ds, batch_size=cfg.BATCH_SIZE, shuffle=False,
                                 num_workers=cfg.NUM_WORKERS, pin_memory=True)
-        criterion = SegmentationLoss(focal_weight=cfg.FOCAL_WEIGHT, dice_weight=cfg.DICE_WEIGHT,
-                                     gamma=getattr(cfg, "FOCAL_GAMMA", 2.0),
-                                     ignore_index=cfg.IGNORE_INDEX)
+        loss_weights = {
+            "ce":          getattr(cfg, "CE_WEIGHT",          0.0),
+            "dice":        getattr(cfg, "DICE_WEIGHT",        0.5),
+            "focal":       getattr(cfg, "FOCAL_WEIGHT",       0.5),
+            "lovasz":      getattr(cfg, "LOVASZ_WEIGHT",      0.0),
+            "ohem_ce":     getattr(cfg, "OHEM_CE_WEIGHT",     0.0),
+            "weighted_ce": getattr(cfg, "WEIGHTED_CE_WEIGHT", 0.0),
+        }
+        # Si CLASS_WEIGHTS == "auto" se intenta cargar del cache de un entreno previo
+        # (no se calcula aquí porque no hay train_loader).
+        criterion = SegmentationLoss(
+            weights       = loss_weights,
+            ignore_index  = cfg.IGNORE_INDEX,
+            num_classes   = num_classes,
+            focal_gamma   = getattr(cfg, "FOCAL_GAMMA", 2.0),
+            ohem_top_k    = getattr(cfg, "OHEM_TOP_K", 0.25),
+            class_weights = getattr(cfg, "CLASS_WEIGHTS", None),
+        )
         metrics = SegmentationMetrics(num_classes=num_classes, ignore_index=cfg.IGNORE_INDEX)
         val_loss, val_metrics = validar(model, val_loader, criterion, metrics, device)
 

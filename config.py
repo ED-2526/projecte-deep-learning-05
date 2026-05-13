@@ -70,11 +70,26 @@ class Config:
     OPTIMIZER    = "adamw"
     SGD_MOMENTUM = 0.9        # solo si OPTIMIZER == "sgd"
 
-    # ── Pérdida (Focal + Dice) ────────────────────────────────────────────────
-    FOCAL_WEIGHT = 0.5        # peso de la Focal Loss en la combinada
-    DICE_WEIGHT  = 0.5        # peso de la Dice Loss
-    FOCAL_GAMMA  = 2.0        # exponente de la Focal Loss (enfoca en píxeles difíciles)
-    IGNORE_INDEX = 255        # convención VOC para píxeles de borde no etiquetados (inocuo en COCO)
+    # ── Pérdida combinada (suma ponderada de hasta 6 losses) ──────────────────
+    # Pon peso 0 para desactivar; las losses con peso > 0 se calculan y se suman.
+    # Si todos los pesos son 0 → error claro al construir SegmentationLoss.
+    # Ver losses.py para la definición exacta de cada una. Cualquiera de estos
+    # pesos se puede sobrescribir desde la CLI: --ce-weight, --dice-weight,
+    # --focal-weight, --lovasz-weight, --ohem-ce-weight, --weighted-ce-weight.
+    CE_WEIGHT          = 0.0
+    DICE_WEIGHT        = 0.5
+    FOCAL_WEIGHT       = 0.5
+    LOVASZ_WEIGHT      = 0.0
+    OHEM_CE_WEIGHT     = 0.0
+    WEIGHTED_CE_WEIGHT = 0.0
+
+    # Hiperparámetros específicos de cada loss (override CLI: --focal-gamma,
+    # --ohem-top-k, --class-weights).
+    FOCAL_GAMMA   = 2.0       # exponente de la Focal (enfoca en píxeles difíciles)
+    OHEM_TOP_K    = 0.25      # fracción de píxeles "más difíciles" para OHEM-CE
+    CLASS_WEIGHTS = None      # None | "auto" (frec. inversa, cacheada) | list[float] de NUM_CLASSES
+
+    IGNORE_INDEX  = 255       # convención VOC para píxeles de borde no etiquetados (inocuo en COCO)
 
     # ── Reproducibilidad ──────────────────────────────────────────────────────
     SEED = 42

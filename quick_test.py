@@ -49,9 +49,26 @@ n_tr = sum(p.numel() for p in model.parameters() if p.requires_grad)
 print(f"    OK — {n_tr/1e6:.2f}M params entrenables; congeladas: {[k for k, v in freeze_map.items() if v]}")
 
 # 3) loss
-print("\n[3] loss (Focal + Dice)...")
-criterion = SegmentationLoss(focal_weight=cfg.FOCAL_WEIGHT, dice_weight=cfg.DICE_WEIGHT,
-                             gamma=getattr(cfg, "FOCAL_GAMMA", 2.0), ignore_index=cfg.IGNORE_INDEX)
+print("\n[3] loss combinada (suma ponderada según cfg)...")
+loss_weights = {
+    "ce":          cfg.CE_WEIGHT,
+    "dice":        cfg.DICE_WEIGHT,
+    "focal":       cfg.FOCAL_WEIGHT,
+    "lovasz":      cfg.LOVASZ_WEIGHT,
+    "ohem_ce":     cfg.OHEM_CE_WEIGHT,
+    "weighted_ce": cfg.WEIGHTED_CE_WEIGHT,
+}
+criterion = SegmentationLoss(
+    weights       = loss_weights,
+    ignore_index  = cfg.IGNORE_INDEX,
+    num_classes   = C,
+    focal_gamma   = cfg.FOCAL_GAMMA,
+    ohem_top_k    = cfg.OHEM_TOP_K,
+    # NOTA: si CLASS_WEIGHTS == "auto" sin cache, el quick_test fallará a propósito
+    # (necesitaría un train_loader). Para sanity check pásalo a None o list.
+    class_weights = cfg.CLASS_WEIGHTS if cfg.CLASS_WEIGHTS != "auto" else None,
+)
+print(f"    {criterion!r}")
 t = torch.randint(0, C, (B, H, W), device=device)
 loss = criterion(y.float(), t)
 assert torch.isfinite(loss), "loss no finita"

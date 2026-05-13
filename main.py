@@ -102,8 +102,70 @@ def registre_iou_per_classe(iou_per_classe, class_names, prefix="val_iou"):
             if name != "N/A"}
 
 
+def _parse_class_weights_flag(s):
+    """Convierte el string del flag --class-weights a lo que espera SegmentationLoss.
+       'none' → None, 'auto' → 'auto', 'a,b,c,...' → [float, ...]."""
+    s = s.strip()
+    if s.lower() == "none":
+        return None
+    if s.lower() == "auto":
+        return "auto"
+    return [float(x) for x in s.split(",")]
+
+
+def _build_loss_str(weights, focal_gamma, ohem_top_k, class_weights):
+    """Identificador compacto de la loss para el run_name de Wandb.
+
+    Formato: <nombre><peso> separado por '_' SOLO con las losses activas
+    (peso > 0). Anexa hiperparámetros solo si no son default:
+        gamma != 2.0          → "_g<gamma>"
+        ohem_top_k != 0.25    → "_k<top_k>"
+        class_weights != None → "_cw"
+    Ejemplos:
+        {"ce":1.0}                            → "ce1"
+        {"focal":0.5,"dice":0.5}              → "focal0.5_dice0.5"
+        {"focal":0.5,"lovasz":0.5}, γ=3       → "focal0.5_lovasz0.5_g3"
+        {"ohem_ce":1.0}, k=0.2                → "ohem_ce1_k0.2"
+        {"weighted_ce":1.0}, cw='auto'        → "weighted_ce1_cw"
+    """
+    order = ("ce", "dice", "focal", "lovasz", "ohem_ce", "weighted_ce")
+    parts = [f"{n}{weights[n]:g}" for n in order if weights.get(n, 0.0) > 0]
+    suffix = ""
+    if weights.get("focal", 0.0) > 0 and focal_gamma != 2.0:
+        suffix += f"_g{focal_gamma:g}"
+    if weights.get("ohem_ce", 0.0) > 0 and ohem_top_k != 0.25:
+        suffix += f"_k{ohem_top_k:g}"
+    if weights.get("weighted_ce", 0.0) > 0 and class_weights is not None:
+        suffix += "_cw"
+    return "_".join(parts) + suffix
+
+
+def _apply_loss_overrides(cfg, args):
+    """Sobrescribe los atributos de cfg con los flags CLI si vienen != None.
+       Ha de pasarse ANTES de instanciar la loss para que cfg/W&B reflejen los
+       valores efectivos. Tolera namespaces sin todos los flags (p.ej. fast_train.py)."""
+    overrides = (
+        ("ce_weight",          "CE_WEIGHT"),
+        ("dice_weight",        "DICE_WEIGHT"),
+        ("focal_weight",       "FOCAL_WEIGHT"),
+        ("lovasz_weight",      "LOVASZ_WEIGHT"),
+        ("ohem_ce_weight",     "OHEM_CE_WEIGHT"),
+        ("weighted_ce_weight", "WEIGHTED_CE_WEIGHT"),
+        ("focal_gamma",        "FOCAL_GAMMA"),
+        ("ohem_top_k",         "OHEM_TOP_K"),
+    )
+    for flag, attr in overrides:
+        val = getattr(args, flag, None)
+        if val is not None:
+            setattr(cfg, attr, val)
+    cw_flag = getattr(args, "class_weights", None)
+    if cw_flag is not None:
+        cfg.CLASS_WEIGHTS = _parse_class_weights_flag(cw_flag)
+
+
 def principal(args: argparse.Namespace) -> None:
     cfg = Config()
+    _apply_loss_overrides(cfg, args)        # los flags CLI tienen prioridad sobre cfg
     establir_llavor(cfg.SEED)
     if getattr(cfg, "CUDNN_BENCHMARK", False):
         torch.backends.cudnn.benchmark = True   # tamaño de input fijo → cuDNN puede autotunear
@@ -170,9 +232,25 @@ def principal(args: argparse.Namespace) -> None:
             print(f"[main] torch.compile no disponible ({e}); se usa el modelo sin compilar")
 
     # ── loss + optimizer + scheduler + métricas ──────────────────────────────
-    criterion = SegmentationLoss(focal_weight=cfg.FOCAL_WEIGHT, dice_weight=cfg.DICE_WEIGHT,
-                                 gamma=getattr(cfg, "FOCAL_GAMMA", 2.0),
-                                 ignore_index=cfg.IGNORE_INDEX)
+    loss_weights = {
+        "ce":          cfg.CE_WEIGHT,
+        "dice":        cfg.DICE_WEIGHT,
+        "focal":       cfg.FOCAL_WEIGHT,
+        "lovasz":      cfg.LOVASZ_WEIGHT,
+        "ohem_ce":     cfg.OHEM_CE_WEIGHT,
+        "weighted_ce": cfg.WEIGHTED_CE_WEIGHT,
+    }
+    needs_loader_for_auto = (cfg.WEIGHTED_CE_WEIGHT > 0 and cfg.CLASS_WEIGHTS == "auto")
+    criterion = SegmentationLoss(
+        weights       = loss_weights,
+        ignore_index  = cfg.IGNORE_INDEX,
+        num_classes   = cfg.NUM_CLASSES,
+        focal_gamma   = cfg.FOCAL_GAMMA,
+        ohem_top_k    = cfg.OHEM_TOP_K,
+        class_weights = cfg.CLASS_WEIGHTS,
+        train_loader  = train_loader if needs_loader_for_auto else None,
+    )
+    print(f"[main] {criterion}")
     epochs    = args.epochs if args.epochs is not None else cfg.EPOCHS
     optimizer = construir_optimitzador(model, cfg)
 
@@ -190,8 +268,9 @@ def principal(args: argparse.Namespace) -> None:
         import wandb
         frozen_layers = [f"L{i}" for i, f in enumerate(freeze_map.values()) if f]
         freeze_str = f"freeze({'_'.join(frozen_layers)})" if frozen_layers else "nofrozen"
+        loss_str = _build_loss_str(loss_weights, cfg.FOCAL_GAMMA, cfg.OHEM_TOP_K, cfg.CLASS_WEIGHTS)
         run_name = "overfit" if args.overfit > 0 else \
-                   f"{cfg.DATASET.lower()}-{cfg.BACKBONE}-{cfg.OPTIMIZER}-{freeze_str}"
+                   f"{cfg.DATASET.lower()}-{cfg.BACKBONE}-{cfg.OPTIMIZER}-{freeze_str}-{loss_str}"
         wandb.init(project="finetuning", name=run_name,
                    mode="offline" if args.wandb_offline else "online",
                    config={k: getattr(cfg, k) for k in dir(cfg) if k.isupper()})
@@ -247,7 +326,10 @@ def principal(args: argparse.Namespace) -> None:
 
 
 def analitzar_arguments() -> argparse.Namespace:
-    p = argparse.ArgumentParser(description="U-Net segmentation training (VOC2012 / COCO)")
+    p = argparse.ArgumentParser(
+        description="U-Net segmentation training (VOC2012 / COCO)",
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+    )
     p.add_argument("--data-root", type=str, default="./data",
                    help="Carpeta donde descargar/leer el dataset (raíz de COCO si DATASET='COCO')")
     p.add_argument("--epochs", type=int, default=None, help="Sobrescribe Config.EPOCHS")
@@ -255,6 +337,20 @@ def analitzar_arguments() -> argparse.Namespace:
                    help="Si >0, entrena/valida sobre las primeras N imágenes (sanity check)")
     p.add_argument("--no-wandb", action="store_true", help="Desactiva Wandb")
     p.add_argument("--wandb-offline", action="store_true", help="Wandb en modo offline")
+
+    # ── pesos de la loss combinada (todos default None → usa el valor de cfg) ─
+    g = p.add_argument_group("loss combinada (override de config.py si != None)")
+    g.add_argument("--ce-weight",          type=float, default=None, help="peso CE")
+    g.add_argument("--dice-weight",        type=float, default=None, help="peso Dice")
+    g.add_argument("--focal-weight",       type=float, default=None, help="peso Focal")
+    g.add_argument("--lovasz-weight",      type=float, default=None, help="peso Lovász-Softmax")
+    g.add_argument("--ohem-ce-weight",     type=float, default=None, help="peso OHEM-CE")
+    g.add_argument("--weighted-ce-weight", type=float, default=None, help="peso CE con pesos por clase")
+    g.add_argument("--focal-gamma",        type=float, default=None, help="gamma de Focal (default cfg 2.0)")
+    g.add_argument("--ohem-top-k",         type=float, default=None,
+                   help="fracción de píxeles 'difíciles' para OHEM-CE (default cfg 0.25)")
+    g.add_argument("--class-weights",      type=str,   default=None,
+                   help="'none' | 'auto' | lista 'w0,w1,...' de NUM_CLASSES floats")
     return p.parse_args()
 
 
