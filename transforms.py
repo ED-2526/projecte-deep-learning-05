@@ -18,10 +18,11 @@ class PairedTransform:
 
     Augmentaciones de entrenamiento (moderadas — evitan las que perjudican imágenes
     naturales, p.ej. el flip vertical: coches/personas no aparecen del revés):
-      - Resize a img_size x img_size  (bilinear imagen / nearest máscara)
+      - Random scale (0.5x – 2.0x) + random crop a img_size x img_size
+        (sustituye al resize fijo: introduce variación de escala y de posición)
       - Random horizontal flip
-      - Random rotation  ±15°
-      - Random affine    (shear ±10°, scale 0.8–1.2)
+      - Random rotation  ±15°  (fill=255 en la máscara → ignore_index)
+      - Random affine shear ±10°  (fill=255 en la máscara → ignore_index)
       - Random brightness / contrast
       - Random hue / saturation
       - Random gamma
@@ -38,11 +39,29 @@ class PairedTransform:
         self.hflip_p  = hflip_p
 
     def __call__(self, image, mask):
-        size = (self.img_size, self.img_size)
-        image = TF.resize(image, size, interpolation=T.InterpolationMode.BILINEAR)
-        mask  = TF.resize(mask,  size, interpolation=T.InterpolationMode.NEAREST)
-
         if self.train:
+            # --- Random scale (0.5x – 2.0x) + random crop a img_size x img_size ---
+            # Sustituye al resize fijo en entrenamiento para introducir variación de escala
+            # y de posición del objeto. La máscara se rellena con 255 (ignore_index) en
+            # las zonas sin contenido para que la loss no las cuente.
+            scale_factor = random.uniform(0.5, 2.0)
+            w, h = image.size
+            new_h, new_w = int(h * scale_factor), int(w * scale_factor)
+            image = TF.resize(image, (new_h, new_w), interpolation=T.InterpolationMode.BILINEAR)
+            mask  = TF.resize(mask,  (new_h, new_w), interpolation=T.InterpolationMode.NEAREST)
+
+            pad_h = max(self.img_size - new_h, 0)
+            pad_w = max(self.img_size - new_w, 0)
+            if pad_h > 0 or pad_w > 0:
+                image = TF.pad(image, [0, 0, pad_w, pad_h], fill=0)
+                mask  = TF.pad(mask,  [0, 0, pad_w, pad_h], fill=255)
+
+            cur_w, cur_h = image.size
+            top  = random.randint(0, cur_h - self.img_size)
+            left = random.randint(0, cur_w - self.img_size)
+            image = TF.crop(image, top, left, self.img_size, self.img_size)
+            mask  = TF.crop(mask,  top, left, self.img_size, self.img_size)
+
             # --- transformaciones geométricas (sincronizadas imagen + máscara) ---
             if random.random() < self.hflip_p:
                 image = TF.hflip(image)
@@ -51,15 +70,14 @@ class PairedTransform:
             if random.random() < 0.5:
                 angle = random.uniform(-15, 15)
                 image = TF.rotate(image, angle, interpolation=T.InterpolationMode.BILINEAR)
-                mask  = TF.rotate(mask,  angle, interpolation=T.InterpolationMode.NEAREST)
+                mask  = TF.rotate(mask,  angle, interpolation=T.InterpolationMode.NEAREST, fill=255)
 
             if random.random() < 0.3:
                 shear = (random.uniform(-10, 10), random.uniform(-10, 10))
-                scale = random.uniform(0.8, 1.2)
-                image = TF.affine(image, angle=0, translate=(0, 0), scale=scale,
+                image = TF.affine(image, angle=0, translate=(0, 0), scale=1.0,
                                   shear=shear, interpolation=T.InterpolationMode.BILINEAR)
-                mask  = TF.affine(mask,  angle=0, translate=(0, 0), scale=scale,
-                                  shear=shear, interpolation=T.InterpolationMode.NEAREST)
+                mask  = TF.affine(mask,  angle=0, translate=(0, 0), scale=1.0,
+                                  shear=shear, interpolation=T.InterpolationMode.NEAREST, fill=255)
 
             # --- transformaciones de color (solo imagen) ---
             if random.random() < 0.5:
@@ -78,6 +96,11 @@ class PairedTransform:
 
             if random.random() < 0.25:
                 image = image.filter(ImageFilter.GaussianBlur(radius=random.uniform(0.5, 1.5)))
+        else:
+            # Validación: resize determinista (sin augmentation)
+            size  = (self.img_size, self.img_size)
+            image = TF.resize(image, size, interpolation=T.InterpolationMode.BILINEAR)
+            mask  = TF.resize(mask,  size, interpolation=T.InterpolationMode.NEAREST)
 
         image = TF.to_tensor(image)
         image = TF.normalize(image, self.IMAGENET_MEAN, self.IMAGENET_STD)
