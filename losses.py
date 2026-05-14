@@ -48,13 +48,15 @@ _NEEDS_PROBS  = ("dice", "lovasz")
 # ╰───────────────────────────────────────────────────────────────────────╯
 
 class CrossEntropy(nn.Module):
-    """CE estándar píxel a píxel, con ignore_index."""
-    def __init__(self, ignore_index: int = 255):
+    """CE estándar píxel a píxel, con ignore_index y label smoothing opcional."""
+    def __init__(self, ignore_index: int = 255, label_smoothing: float = 0.0):
         super().__init__()
         self.ignore_index = ignore_index
+        self.label_smoothing = label_smoothing
 
     def forward(self, logits: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
-        return F.cross_entropy(logits, targets.long(), ignore_index=self.ignore_index)
+        return F.cross_entropy(logits, targets.long(), ignore_index=self.ignore_index,
+                               label_smoothing=self.label_smoothing)
 
 
 class DiceLoss(nn.Module):
@@ -167,17 +169,21 @@ class OhemCrossEntropy(nn.Module):
     CE con Online Hard Example Mining: calcula la CE por píxel, descarta los
     ignorados y promedia solo sobre el ``top_k`` × N píxeles con más loss
     (los "difíciles"). ``top_k`` ∈ (0, 1]; default 0.25.
+    Soporta ``label_smoothing`` (se aplica antes del topk).
     """
-    def __init__(self, top_k: float = 0.25, ignore_index: int = 255):
+    def __init__(self, top_k: float = 0.25, ignore_index: int = 255,
+                 label_smoothing: float = 0.0):
         super().__init__()
         if not 0.0 < top_k <= 1.0:
             raise ValueError(f"top_k debe estar en (0, 1], recibido {top_k}")
         self.top_k = top_k
         self.ignore_index = ignore_index
+        self.label_smoothing = label_smoothing
 
     def forward(self, logits: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
         targets = targets.long()
-        ce = F.cross_entropy(logits, targets, ignore_index=self.ignore_index, reduction="none")
+        ce = F.cross_entropy(logits, targets, ignore_index=self.ignore_index,
+                             label_smoothing=self.label_smoothing, reduction="none")
         ce_flat = ce.view(-1)
         valid   = (targets != self.ignore_index).view(-1)
         ce_valid = ce_flat[valid]
@@ -195,9 +201,10 @@ class WeightedCrossEntropy(nn.Module):
     mueve al device de los logits la primera vez que se llama a forward.
     """
     def __init__(self, class_weights: Optional[Union[torch.Tensor, Iterable[float]]] = None,
-                 ignore_index: int = 255):
+                 ignore_index: int = 255, label_smoothing: float = 0.0):
         super().__init__()
         self.ignore_index = ignore_index
+        self.label_smoothing = label_smoothing
         if class_weights is None:
             self._weight: Optional[torch.Tensor] = None
         elif isinstance(class_weights, torch.Tensor):
@@ -210,7 +217,8 @@ class WeightedCrossEntropy(nn.Module):
         if w is not None and w.device != logits.device:
             w = w.to(logits.device)
             self._weight = w                      # cachea la versión movida
-        return F.cross_entropy(logits, targets.long(), weight=w, ignore_index=self.ignore_index)
+        return F.cross_entropy(logits, targets.long(), weight=w, ignore_index=self.ignore_index,
+                               label_smoothing=self.label_smoothing)
 
 
 # ╭───────────────────────────────────────────────────────────────────────╮
@@ -281,6 +289,7 @@ class SegmentationLoss(nn.Module):
         class_weights=None,
         train_loader=None,
         cache_path: Optional[str] = None,
+        label_smoothing: float = 0.0,
     ):
         super().__init__()
         unknown = set(weights) - set(_VALID_LOSSES)
@@ -292,17 +301,19 @@ class SegmentationLoss(nn.Module):
             raise ValueError("SegmentationLoss: todos los pesos son 0 (o dict vacío). "
                              "Asigna peso > 0 al menos a una loss.")
 
-        self.ignore_index = ignore_index
-        self.num_classes  = num_classes
-        self.focal_gamma  = focal_gamma
-        self.ohem_top_k   = ohem_top_k
+        self.ignore_index    = ignore_index
+        self.num_classes     = num_classes
+        self.focal_gamma     = focal_gamma
+        self.ohem_top_k      = ohem_top_k
+        self.label_smoothing = label_smoothing
         self.class_weights_arg = class_weights        # se guarda para inspección/run_name
         self._weights     = active                    # dict ordenado de losses activas
         self._needs_probs = any(k in _NEEDS_PROBS for k in active)
 
         self.losses = nn.ModuleDict()
         if "ce" in active:
-            self.losses["ce"] = CrossEntropy(ignore_index=ignore_index)
+            self.losses["ce"] = CrossEntropy(ignore_index=ignore_index,
+                                             label_smoothing=label_smoothing)
         if "dice" in active:
             self.losses["dice"] = DiceLoss(ignore_index=ignore_index)
         if "focal" in active:
@@ -310,12 +321,15 @@ class SegmentationLoss(nn.Module):
         if "lovasz" in active:
             self.losses["lovasz"] = LovaszSoftmax(ignore_index=ignore_index)
         if "ohem_ce" in active:
-            self.losses["ohem_ce"] = OhemCrossEntropy(top_k=ohem_top_k, ignore_index=ignore_index)
+            self.losses["ohem_ce"] = OhemCrossEntropy(top_k=ohem_top_k, ignore_index=ignore_index,
+                                                     label_smoothing=label_smoothing)
         if "weighted_ce" in active:
             w = self._resolve_class_weights(class_weights, num_classes, ignore_index,
                                             train_loader, cache_path)
-            self.losses["weighted_ce"] = WeightedCrossEntropy(class_weights=w,
-                                                              ignore_index=ignore_index)
+            self.losses["weighted_ce"] = WeightedCrossEntropy(
+                class_weights=w, ignore_index=ignore_index,
+                label_smoothing=label_smoothing,
+            )
 
     # ── auxiliares ──────────────────────────────────────────────────────────
     @staticmethod
@@ -385,6 +399,8 @@ class SegmentationLoss(nn.Module):
         if "weighted_ce" in self._weights and self.class_weights_arg is not None:
             cw = self.class_weights_arg if isinstance(self.class_weights_arg, str) else "list"
             extras.append(f"class_weights={cw}")
+        if self.label_smoothing > 0:
+            extras.append(f"label_smoothing={self.label_smoothing:g}")
         head = "SegmentationLoss(" + ", ".join(parts) + ")"
         return head + (" [" + ", ".join(extras) + "]" if extras else "")
 

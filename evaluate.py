@@ -33,6 +33,7 @@ from pathlib import Path
 import matplotlib.pyplot as plt
 import numpy as np
 import torch
+import torch.nn.functional as F
 from matplotlib.patches import Patch
 from torch.utils.data import DataLoader
 
@@ -44,6 +45,60 @@ from main import construir_dataset
 from metrics import SegmentationMetrics
 from models.unet import UNet
 from transforms import PairedTransform
+
+
+# ───────────────────────────────────────── TTA wrapper ─────────────────────────────────────
+class TTAWrapper(torch.nn.Module):
+    """
+    EXPLICACIÓ SIMPLE: Test-Time Augmentation. Embolcalla un model i, en
+    inferència, fa varies passades amb augmentations geomètriques (flips +
+    multi-escala), promitja els logits, i retorna el resultat. No modifica
+    el model original; només es fa servir en eval. Cost ≈ N passades extra
+    on N = (1 + use_hflip) * len(scales).
+    """
+    def __init__(self, model: torch.nn.Module, scales=(1.0,), use_hflip: bool = False):
+        super().__init__()
+        self.model     = model
+        self.scales    = tuple(scales) if scales else (1.0,)
+        self.use_hflip = bool(use_hflip)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        # x: (B, C, H, W). Devuelve logits promedio en el tamaño de x.
+        original_hw = x.shape[-2:]
+        accumulated, n_views = None, 0
+
+        for scale in self.scales:
+            x_scaled = (x if scale == 1.0
+                        else F.interpolate(x, scale_factor=scale,
+                                           mode="bilinear", align_corners=False))
+
+            logits = self.model(x_scaled)
+            if logits.shape[-2:] != original_hw:
+                logits = F.interpolate(logits, size=original_hw,
+                                       mode="bilinear", align_corners=False)
+            accumulated = logits if accumulated is None else accumulated + logits
+            n_views += 1
+
+            if self.use_hflip:
+                logits_f = self.model(torch.flip(x_scaled, dims=[-1]))
+                if logits_f.shape[-2:] != original_hw:
+                    logits_f = F.interpolate(logits_f, size=original_hw,
+                                             mode="bilinear", align_corners=False)
+                accumulated = accumulated + torch.flip(logits_f, dims=[-1])
+                n_views += 1
+
+        return accumulated / max(1, n_views)
+
+
+def maybe_wrap_with_tta(model, cfg):
+    """Si cfg.USE_TTA está activo envuelve el model con TTAWrapper; si no, lo devuelve tal cual."""
+    if not getattr(cfg, "USE_TTA", False):
+        return model
+    scales    = getattr(cfg, "TTA_SCALES", (1.0,))
+    use_hflip = getattr(cfg, "TTA_HFLIP", True)
+    n_views = (2 if use_hflip else 1) * len(scales)
+    print(f"[evaluate] TTA activado: scales={scales} hflip={use_hflip} → {n_views} pasadas/imagen")
+    return TTAWrapper(model, scales=scales, use_hflip=use_hflip)
 
 
 # ───────────────────────────────────────── helpers visuals ─────────────────────────────────
@@ -213,9 +268,16 @@ def principal(args):
 
     val_ds = construir_dataset(cfg, args.data_root, "val")
 
-    model = UNet(num_classes=num_classes, backbone=backbone, pretrained=False).to(device)
+    model = UNet(num_classes=num_classes, backbone=backbone, pretrained=False,
+                 decoder_dropout=getattr(cfg, "DECODER_DROPOUT", 0.0)).to(device)
     model.load_state_dict(state_dict)
     model.eval()
+
+    # Si --tta o cfg.USE_TTA, envolvemos el modelo con TTAWrapper.
+    # El flag CLI --tta sobreescribe el cfg.
+    if getattr(args, "tta", False):
+        cfg.USE_TTA = True
+    eval_model = maybe_wrap_with_tta(model, cfg)
 
     classes  = get_classes(dataset_name)
     colormap = get_colormap(dataset_name)
@@ -241,8 +303,13 @@ def principal(args):
             ohem_top_k    = getattr(cfg, "OHEM_TOP_K", 0.25),
             class_weights = getattr(cfg, "CLASS_WEIGHTS", None),
         )
-        metrics = SegmentationMetrics(num_classes=num_classes, ignore_index=cfg.IGNORE_INDEX)
-        val_loss, val_metrics = validar(model, val_loader, criterion, metrics, device)
+        metrics = SegmentationMetrics(
+            num_classes=num_classes, ignore_index=cfg.IGNORE_INDEX,
+            compute_pixel_accuracy=getattr(cfg, "LOG_PIXEL_ACCURACY", False),
+            compute_f1            =getattr(cfg, "LOG_F1_PER_CLASS",   False),
+            compute_boundary_iou  =getattr(cfg, "LOG_BOUNDARY_IOU",   False),
+        )
+        val_loss, val_metrics = validar(eval_model, val_loader, criterion, metrics, device)
 
         iou = val_metrics["IoU_per_class"]
         print(f"\n=== {dataset_name} val ===")
@@ -254,7 +321,7 @@ def principal(args):
 
     if not args.no_figure:
         idxs = triar_exemples(val_ds, args.num_samples, scan_limit=args.scan_limit, seed=args.seed)
-        fer_figura(model, val_ds, device, idxs, classes, colormap, args.out)
+        fer_figura(eval_model, val_ds, device, idxs, classes, colormap, args.out)
 
 
 def analitzar_arguments():
@@ -276,6 +343,8 @@ def analitzar_arguments():
     p.add_argument("--device",      type=str, default=None, help="cuda | cpu (auto si no es passa)")
     p.add_argument("--no-figure",   action="store_true", help="No generar la figura (només mètriques)")
     p.add_argument("--no-metrics",  action="store_true", help="No calcular mIoU (només la figura)")
+    p.add_argument("--tta",         action="store_true",
+                   help="Activa TTA (multi-escala + hflip) usando cfg.TTA_SCALES y cfg.TTA_HFLIP")
     return p.parse_args()
 
 

@@ -64,18 +64,22 @@ class DecoderBlock(nn.Module):
     1. Fa la imatge més gran (upsampling) amb ConvTranspose2d
     2. Combina amb característiques de l'Encoder (skip connection)
     3. Aplica convolucions per refinar els detalls
+    4. (Opcional) Dropout2d al final per regularitzar el decoder
     """
-    def __init__(self, in_ch, skip_ch, out_ch):
+    def __init__(self, in_ch, skip_ch, out_ch, dropout: float = 0.0):
         super().__init__()
         self.up = nn.ConvTranspose2d(in_ch, out_ch, kernel_size=2, stride=2)
-        self.conv = nn.Sequential(
+        layers = [
             nn.Conv2d(out_ch + skip_ch, out_ch, 3, padding=1),
             nn.BatchNorm2d(out_ch),
             nn.ReLU(inplace=True),
             nn.Conv2d(out_ch, out_ch, 3, padding=1),
             nn.BatchNorm2d(out_ch),
             nn.ReLU(inplace=True),
-        )
+        ]
+        if dropout and dropout > 0.0:
+            layers.append(nn.Dropout2d(p=dropout))
+        self.conv = nn.Sequential(*layers)
 
     def forward(self, x, skip):
         x = self.up(x)
@@ -93,15 +97,16 @@ class UNet(nn.Module):
     Entrada: imatge RGB (B, 3, H, W)
     Sortida: logits per píxel (B, num_classes, H, W)
     """
-    def __init__(self, num_classes, backbone="resnet50", pretrained=True):
+    def __init__(self, num_classes, backbone="resnet50", pretrained=True,
+                 decoder_dropout: float = 0.0):
         super().__init__()
         self.encoder = Encoder(backbone=backbone, pretrained=pretrained)
         b, s3, s2, s1, s0 = self.encoder.channels
 
-        self.dec1 = DecoderBlock(b,    s3, b // 4)
-        self.dec2 = DecoderBlock(b//4, s2, b // 8)
-        self.dec3 = DecoderBlock(b//8, s1, b // 16)
-        self.dec4 = DecoderBlock(b//16, s0, b // 32)
+        self.dec1 = DecoderBlock(b,    s3, b // 4,  dropout=decoder_dropout)
+        self.dec2 = DecoderBlock(b//4, s2, b // 8,  dropout=decoder_dropout)
+        self.dec3 = DecoderBlock(b//8, s1, b // 16, dropout=decoder_dropout)
+        self.dec4 = DecoderBlock(b//16, s0, b // 32, dropout=decoder_dropout)
         self.head = nn.Conv2d(b // 32, num_classes, kernel_size=1)
 
     def forward(self, x):

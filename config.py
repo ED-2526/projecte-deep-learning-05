@@ -1,95 +1,218 @@
 """
-EXPLICACIÓ SIMPLE: Configuració centralitzada del projecte.
+Configuración centralizada del proyecto.
 
-Aquí es defineixen tots els hiperparàmetres (números que controlen com treballa el model).
-En lloc de dispersar aquests valors pel codi, es concentren aquí per fàcil modificació.
-Canvia els valors aquí si vols ajustar l'entrenament sense tocar el codi principal.
+Convención de marcas en este archivo:
+    ✅  ACTIVO          → el código actual lee y aplica este parámetro
+    ⚠️  PARCIAL         → el parámetro existe pero solo cubre un subconjunto
+    🔧  FUTURO          → placeholder; el código aún NO lo aplica.
+                          Cambiar el valor no tiene efecto hasta que se
+                          implemente la técnica correspondiente.
 
-Resultado de esta config (merge polbeltran + uriramos):
-  - Backbone ResNet50, layers 3 y 4 descongeladas (fine-tuning de las capas semánticas).
-  - Loss Focal + Dice (mejor con clases desbalanceadas como COCO).
-  - Augmentaciones moderadas (ver transforms.py).
-  - AMP + channels_last + torch.compile + cuDNN benchmark → entrenamiento mucho más rápido.
-  - Warmup lineal + cosine annealing (ver main.py).
+Cualquier parámetro de este archivo puede sobrescribirse desde la CLI con
+un flag análogo (ej: BATCH_SIZE → --batch-size). Los flags que ya existen
+son los de la sección "PÉRDIDA COMBINADA" (--ce-weight, --dice-weight, ...);
+el resto se irán añadiendo a main.py según se vayan necesitando.
 """
 
 class Config:
     """Todos los hiperparámetros del modelo y del entrenamiento."""
 
-    # ── Datos ─────────────────────────────────────────────────────────────────
-    # COCO por defecto (es lo que pide el enunciado). Para usar VOC2012 (se
-    # descarga solo, 21 clases) comenta las 2 líneas de COCO y descomenta las de VOC.
-    DATASET     = "COCO"
-    NUM_CLASSES = 81          # COCO: 0 = fondo + 80 categorías (category_id remapeados a 1..80)
-    # DATASET     = "VOC"
-    # NUM_CLASSES = 21        # VOC2012: 20 clases + fondo (+ ignore_index 255 en bordes)
+    # ═══════════════════════════════════════════════════════════════════════
+    # 1. DATOS
+    # ═══════════════════════════════════════════════════════════════════════
+    # Dataset y formato de entrada.
+    DATASET     = "COCO"          # ✅ "COCO" | "VOC" | "VOC2012"
+    NUM_CLASSES = 81              # ✅ COCO: 81 (fondo + 80) | VOC: 21
+    IMG_SIZE    = 256             # ✅ enunciado pide 256
+    IGNORE_INDEX = 255            # ✅ convención VOC para píxeles de borde
 
-    # Carpeta donde están / se guardan las máscaras pre-generadas de COCO (ver
-    # tools/precompute_coco_masks.py). None → usa la misma carpeta de --data-root.
-    # Si el COCO es de solo lectura (p.ej. lo descargó el profe), pon aquí una
-    # carpeta tuya con permisos de escritura, p.ej.:
-    #   MASKS_ROOT = "/home/edxnG05/coco_masks"
-    MASKS_ROOT = "/home/edxnG05/coco_masks"
+    # Carpeta donde están / se guardan las máscaras pre-generadas de COCO.
+    # None → usa la misma carpeta de --data-root.
+    MASKS_ROOT = "/home/edxnG05/coco_masks"   # ✅
 
-    IMG_SIZE    = 256         # 256 (enunciado). Subir a 384 da más detalle pero ~2x más coste
-    BATCH_SIZE  = 32          # con AMP cabe holgado en la L40S 48GB; subir si sobra VRAM
-    NUM_WORKERS = 8           # procesos paralelos de carga de datos (~ #cores/3; útil hasta ~12)
-    PREFETCH_FACTOR = 4       # batches que precarga cada worker por adelantado
+    # DataLoader.
+    BATCH_SIZE      = 32           # ✅
+    NUM_WORKERS     = 8            # ✅
+    PREFETCH_FACTOR = 4            # ✅ batches que precarga cada worker
 
-    # ── Optimización de velocidad (solo efecto en GPU; todo opt-out) ──────────
-    USE_AMP         = True    # mixed precision fp16 (autocast + GradScaler): ~2x más rápido
-    COMPILE         = True    # torch.compile: 1.2-1.8x extra. Ponlo False si da problemas
-    CHANNELS_LAST   = True    # memory format channels_last: convoluciones más rápidas
-    CUDNN_BENCHMARK = True    # cuDNN elige el algoritmo de conv más rápido (input de tamaño fijo)
-    GRAD_CLIP_NORM  = 1.0     # recorte de gradiente (estabilidad con LR altos / capas descongeladas)
+    # Subset de clases COCO (entrenar con solo N de las 80).
+    # None  → todas las 80; lista de category_id COCO → solo esas;
+    # los píxeles de las demás se marcan como IGNORE_INDEX.
+    COCO_KEEP_CLASSES = None       # 🔧 FUTURO
 
-    # ── Modelo ────────────────────────────────────────────────────────────────
-    BACKBONE   = "resnet152"   # resnet18 | resnet34 | resnet50 | resnet101 | resnet152
-    PRETRAINED = True
+    # ═══════════════════════════════════════════════════════════════════════
+    # 2. DATA AUGMENTATION (transforms.py)
+    # ═══════════════════════════════════════════════════════════════════════
+    # — Geométricas (sincronizadas imagen + máscara) —
+    AUG_HFLIP_P              = 0.5            # ✅ probabilidad de flip horizontal
+    AUG_VFLIP_P              = 0.0            # ✅ probabilidad de flip vertical (no recomendado)
+    AUG_RANDOM_SCALE_RANGE   = (0.5, 2.0)     # ✅ rango de escalado aleatorio (lo + crop)
+    AUG_ROTATION_DEG         = 15             # ✅ ±grados máximos de rotación
+    AUG_ROTATION_P           = 0.5            # ✅
+    AUG_AFFINE_SHEAR_DEG     = 10             # ✅ ±grados máximos de shear
+    AUG_AFFINE_P             = 0.3            # ✅
 
-    # Congelación del encoder capa a capa (True = congelada, False = entrenable):
-    #   layer0 → conv inicial + maxpool   (features muy genéricas: bordes)
-    #   layer1 → primer bloque ResNet     (features simples: texturas)
-    #   layer2 → segundo bloque ResNet    (features medias: formas)
-    #   layer3 → tercer bloque ResNet     (features complejas: partes de objetos)  → entrenable
-    #   layer4 → cuarto bloque ResNet     (features semánticas: objetos completos) → entrenable
-    FREEZE_LAYER0 = True
-    FREEZE_LAYER1 = True
-    FREEZE_LAYER2 = True
-    FREEZE_LAYER3 = True    # descongelada: las capas semánticas necesitan adaptarse a la tarea
-    FREEZE_LAYER4 = True     # descongelada: ídem
+    # — Color (solo imagen) —
+    AUG_BRIGHTNESS_RANGE     = (0.8, 1.2)     # ✅
+    AUG_CONTRAST_RANGE       = (0.8, 1.2)     # ✅
+    AUG_BC_P                 = 0.5            # ✅ probabilidad conjunta brillo+contraste
+    AUG_HUE_RANGE            = (-0.1, 0.1)    # ✅
+    AUG_SATURATION_RANGE     = (0.8, 1.2)     # ✅
+    AUG_HS_P                 = 0.5            # ✅ probabilidad conjunta hue+saturation
+    AUG_GAMMA_RANGE          = (0.8, 1.2)     # ✅
+    AUG_GAMMA_P              = 0.25           # ✅
+    AUG_BLUR_RADIUS_RANGE    = (0.5, 1.5)     # ✅
+    AUG_BLUR_P               = 0.25           # ✅
 
-    # ── Entrenamiento ─────────────────────────────────────────────────────────
-    LR_ENCODER   = 1e-5       # bajo: no destruir los pesos ImageNet de las capas descongeladas
-    LR_DECODER   = 1e-4       # decoder + head se entrenan desde cero
-    WEIGHT_DECAY = 1e-4
-    EPOCHS        = 50        # ~30 ya suele bastar con la mejor loss + augmentations + scheduler
-    WARMUP_EPOCHS = 2         # warmup lineal del LR antes del cosine annealing
+    # — Avanzadas —
+    AUG_CUTMIX_P             = 0.0            # 🔧 FUTURO: CutMix entre 2 imágenes
+    AUG_COPYPASTE_P          = 0.0            # 🔧 FUTURO: pegar instancias entre imágenes
+    AUG_MIXUP_ALPHA          = 0.0            # 🔧 FUTURO: alpha de Mixup (0 = off)
+    AUG_RANDOM_ERASING_P     = 0.0            # 🔧 FUTURO
 
-    # Optimizer: "adamw" | "adam" | "sgd" | "rmsprop" | "adagrad"
-    OPTIMIZER    = "adamw"
-    SGD_MOMENTUM = 0.9        # solo si OPTIMIZER == "sgd"
+    # ═══════════════════════════════════════════════════════════════════════
+    # 3. MODELO
+    # ═══════════════════════════════════════════════════════════════════════
+    # — Encoder —
+    BACKBONE   = "resnet152"       # ✅ resnet18 | resnet34 | resnet50 | resnet101 | resnet152
+    PRETRAINED = True              # ✅ pesos ImageNet
 
-    # ── Pérdida combinada (suma ponderada de hasta 6 losses) ──────────────────
-    # Pon peso 0 para desactivar; las losses con peso > 0 se calculan y se suman.
-    # Si todos los pesos son 0 → error claro al construir SegmentationLoss.
-    # Ver losses.py para la definición exacta de cada una. Cualquiera de estos
-    # pesos se puede sobrescribir desde la CLI: --ce-weight, --dice-weight,
-    # --focal-weight, --lovasz-weight, --ohem-ce-weight, --weighted-ce-weight.
-    CE_WEIGHT          = 0.0
-    DICE_WEIGHT        = 0.5
-    FOCAL_WEIGHT       = 0.5
-    LOVASZ_WEIGHT      = 0.0
-    OHEM_CE_WEIGHT     = 0.0
-    WEIGHTED_CE_WEIGHT = 0.0
+    # Congelación capa a capa del encoder (True = congelada).
+    FREEZE_LAYER0 = True           # ✅ conv inicial + maxpool
+    FREEZE_LAYER1 = True           # ✅ primer bloque ResNet
+    FREEZE_LAYER2 = True           # ✅ segundo bloque ResNet
+    FREEZE_LAYER3 = True           # ✅ tercer bloque (descongelar para fine-tune semántico)
+    FREEZE_LAYER4 = True           # ✅ cuarto bloque (ídem)
 
-    # Hiperparámetros específicos de cada loss (override CLI: --focal-gamma,
-    # --ohem-top-k, --class-weights).
-    FOCAL_GAMMA   = 2.0       # exponente de la Focal (enfoca en píxeles difíciles)
-    OHEM_TOP_K    = 0.25      # fracción de píxeles "más difíciles" para OHEM-CE
-    CLASS_WEIGHTS = None      # None | "auto" (frec. inversa, cacheada) | list[float] de NUM_CLASSES
+    # — Decoder —
+    DECODER_TYPE              = "unet"        # 🔧 "unet" (actual) | "deeplabv3plus" | "fpn"
+    DECODER_USE_BILINEAR_UP   = False         # 🔧 False=ConvTranspose2d (actual), True=bilinear+conv
+    DECODER_DROPOUT           = 0.0           # ✅ dropout 2D al final de cada DecoderBlock
 
-    IGNORE_INDEX  = 255       # convención VOC para píxeles de borde no etiquetados (inocuo en COCO)
+    # — Módulos extra del modelo —
+    USE_ATTENTION_GATES = False    # 🔧 Attention gates en skip connections (Attention U-Net)
+    USE_SE_BLOCKS       = False    # 🔧 Squeeze-Excitation blocks
+    USE_CBAM            = False    # 🔧 Convolutional Block Attention Module
+    USE_ASPP            = False    # 🔧 Atrous Spatial Pyramid Pooling (estilo DeepLab)
+    USE_AUX_HEAD        = False    # 🔧 cabeza auxiliar para deep supervision
+    AUX_LOSS_WEIGHT     = 0.4      # 🔧 peso de la loss auxiliar
 
-    # ── Reproducibilidad ──────────────────────────────────────────────────────
-    SEED = 42
+    # ═══════════════════════════════════════════════════════════════════════
+    # 4. ENTRENAMIENTO
+    # ═══════════════════════════════════════════════════════════════════════
+    EPOCHS        = 50             # ✅
+    WARMUP_EPOCHS = 2              # ✅ warmup lineal del LR
+
+    # — Optimizer —
+    OPTIMIZER     = "adamw"        # ✅ adamw | adam | sgd | rmsprop | adagrad
+    LR_ENCODER    = 1e-5           # ✅ bajo: no destruir pesos ImageNet
+    LR_DECODER    = 1e-4           # ✅ decoder + head se entrenan desde cero
+    WEIGHT_DECAY  = 1e-4           # ✅
+    SGD_MOMENTUM  = 0.9            # ✅ solo si OPTIMIZER == "sgd"
+    ADAM_BETAS    = (0.9, 0.999)   # 🔧 actualmente hardcoded a defaults de torch
+
+    # — Scheduler —
+    SCHEDULER     = "cosine_warmup"  # ✅ "cosine_warmup" | "poly" | "step" | "constant"
+    POLY_POWER    = 0.9              # ✅ exponente del scheduler "poly" (estándar en seg)
+    STEP_SIZE     = 30               # ✅ epochs entre decays del scheduler "step"
+    STEP_GAMMA    = 0.1              # ✅ factor multiplicativo en cada decay
+
+    # — Estabilidad / regularización —
+    GRAD_CLIP_NORM   = 1.0          # ✅ recorte de gradiente
+    GRAD_ACCUM_STEPS = 1            # 🔧 acumulación de gradientes (1 = sin acumular)
+    LABEL_SMOOTHING  = 0.0          # ✅ suaviza targets one-hot (0.0–0.1 típico)
+
+    # — Promedios de pesos —
+    USE_EMA          = False        # ✅ Exponential Moving Average de los pesos
+    EMA_DECAY        = 0.9999       # ✅ decay del EMA
+    USE_SWA          = False        # 🔧 Stochastic Weight Averaging
+    SWA_START_EPOCH  = 40           # 🔧 epoch desde el que SWA empieza a promediar
+    SWA_LR           = 5e-5         # 🔧 LR fijo durante SWA
+
+    # — Mixup a nivel de batch (distinto del AUG_MIXUP_ALPHA por imagen) —
+    MIXUP_BATCH_ALPHA = 0.0         # 🔧 0.0 = off; típico 0.2–0.4
+
+    # ═══════════════════════════════════════════════════════════════════════
+    # 5. PÉRDIDA COMBINADA  (todos editables vía CLI)
+    # ═══════════════════════════════════════════════════════════════════════
+    # Suma ponderada de las losses con peso > 0.
+    # CLI: --ce-weight, --dice-weight, --focal-weight, --lovasz-weight,
+    #      --ohem-ce-weight, --weighted-ce-weight.
+    CE_WEIGHT          = 0.0       # ✅
+    DICE_WEIGHT        = 0.5       # ✅
+    FOCAL_WEIGHT       = 0.5       # ✅
+    LOVASZ_WEIGHT      = 0.0       # ✅
+    OHEM_CE_WEIGHT     = 0.0       # ✅
+    WEIGHTED_CE_WEIGHT = 0.0       # ✅
+
+    # — Hiperparámetros de cada loss (CLI: --focal-gamma, --ohem-top-k, --class-weights) —
+    FOCAL_GAMMA   = 2.0            # ✅ exponente Focal
+    OHEM_TOP_K    = 0.25           # ✅ fracción de píxeles "duros"
+    CLASS_WEIGHTS = None           # ✅ None | "auto" | list[float] de NUM_CLASSES
+    DICE_SMOOTH   = 1e-6           # 🔧 hardcoded en DiceLoss
+
+    # — Losses futuras —
+    BOUNDARY_WEIGHT = 0.0          # 🔧 Boundary Loss (mejora bordes)
+    TVERSKY_WEIGHT  = 0.0          # 🔧 Tversky Loss
+    TVERSKY_ALPHA   = 0.7          # 🔧 peso falsos positivos
+    TVERSKY_BETA    = 0.3          # 🔧 peso falsos negativos
+
+    # ═══════════════════════════════════════════════════════════════════════
+    # 6. SAMPLING (DataLoader)
+    # ═══════════════════════════════════════════════════════════════════════
+    SAMPLER             = "random"  # 🔧 "random" (actual) | "class_balanced" | "hard_example"
+    REPEATED_AUG_TIMES  = 1         # 🔧 repeated augmentation: 1 = una augmentation por sample
+
+    # ═══════════════════════════════════════════════════════════════════════
+    # 7. VALIDACIÓN / EVALUACIÓN
+    # ═══════════════════════════════════════════════════════════════════════
+    # Métricas extra (mIoU + IoU por clase ya están activos).
+    LOG_PIXEL_ACCURACY  = False    # ✅ accuracy por píxel
+    LOG_F1_PER_CLASS    = False    # ✅ F1 / Dice score por clase
+    LOG_BOUNDARY_IOU    = False    # ✅ IoU restringido a píxeles de borde
+
+    # — Test-Time Augmentation (en evaluate.py; el flag --tta también lo activa) —
+    USE_TTA             = False    # ✅ activar TTA en evaluate.py
+    TTA_HFLIP           = True     # ✅ promediar logits con hflip
+    TTA_SCALES          = (0.75, 1.0, 1.25)  # ✅ multi-escala
+
+    # — Inferencia con sliding window (para imágenes grandes) —
+    USE_SLIDING_WINDOW       = False  # 🔧
+    SLIDING_WINDOW_OVERLAP   = 0.25   # 🔧 fracción de solapamiento entre tiles
+
+    # — CRF post-processing (clásico, mejora bordes) —
+    USE_CRF_POSTPROCESS = False    # 🔧 requiere pydensecrf
+
+    # ═══════════════════════════════════════════════════════════════════════
+    # 8. OPTIMIZACIONES DE GPU (solo efecto en CUDA; todo opt-out)
+    # ═══════════════════════════════════════════════════════════════════════
+    USE_AMP         = True         # ✅ mixed precision fp16
+    COMPILE         = True         # ✅ torch.compile
+    CHANNELS_LAST   = True         # ✅ memory format channels_last
+    CUDNN_BENCHMARK = True         # ✅ cuDNN autotune (input fijo)
+
+    # ═══════════════════════════════════════════════════════════════════════
+    # 9. LOGGING / WANDB
+    # ═══════════════════════════════════════════════════════════════════════
+    WANDB_PROJECT       = "finetuning"  # ✅ proyecto de W&B donde aparecen los runs
+    WANDB_LOG_GRADIENTS = "all"         # ✅ "all" | "gradients" | "parameters" | None
+    WANDB_LOG_FREQ      = 50            # ✅ frecuencia (en steps) del watch
+
+    LOG_PREDICTION_SAMPLES = False   # 🔧 sube N imágenes (input/GT/pred) por epoch a W&B
+    LOG_N_PRED_SAMPLES     = 4       # 🔧 cuántas
+    LOG_CONFUSION_MATRIX   = False   # 🔧 sube confusion matrix por epoch a W&B
+    LOG_GRAD_NORMS         = False   # 🔧 norma de gradiente por param group
+
+    # ═══════════════════════════════════════════════════════════════════════
+    # 10. CHECKPOINTING
+    # ═══════════════════════════════════════════════════════════════════════
+    CKPT_DIR              = "checkpoints"  # ✅ carpeta donde se guardan los checkpoints
+    SAVE_BEST_ONLY        = True           # ✅ siempre se guarda el de mejor mIoU
+    SAVE_EVERY_N_EPOCHS   = 0              # ✅ 0 = nunca; N = cada N epochs snapshot
+    RESUME_FROM           = None           # 🔧 ruta de checkpoint para resume
+
+    # ═══════════════════════════════════════════════════════════════════════
+    # 11. REPRODUCIBILIDAD
+    # ═══════════════════════════════════════════════════════════════════════
+    SEED          = 42             # ✅
+    DETERMINISTIC = False          # 🔧 torch.use_deterministic_algorithms (ralentiza ~10–20%)

@@ -1,7 +1,9 @@
 {
   "permissions": {
     "allow": [
-      "Bash(python -c *)"
+      "Bash(python -c *)",
+      "Bash(python losses.py)",
+      "Bash(python -m py_compile config.py losses.py main.py engine.py metrics.py transforms.py ema.py models/unet.py evaluate.py)"
     ]
   }
 }

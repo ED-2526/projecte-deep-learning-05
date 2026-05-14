@@ -14,6 +14,7 @@ from torchvision import datasets
 from classes import get_classes
 from config import Config
 from dataset import CocoSegmentation, CocoSegmentationCached
+from ema import EMA
 from engine import entrenar_una_epoca, validar
 from losses import SegmentationLoss
 from metrics import SegmentationMetrics
@@ -38,7 +39,7 @@ def construir_dataset(cfg: Config, root: str, split: str):
             (ver tools/precompute_coco_masks.py); si no, CocoSegmentation
             (genera las máscaras al vuelo — mucho más lento).
     """
-    transform = PairedTransform(img_size=cfg.IMG_SIZE, train=(split == "train"))
+    transform = PairedTransform(img_size=cfg.IMG_SIZE, train=(split == "train"), cfg=cfg)
     dataset = cfg.DATASET.upper()
 
     if dataset in ("VOC", "VOC2012"):
@@ -85,14 +86,56 @@ def construir_optimitzador(model: UNet, cfg: Config) -> torch.optim.Optimizer:
                      f"Usa: adamw | adam | sgd | rmsprop | adagrad")
 
 
-def build_warmup_cosine_scheduler(optimizer, warmup_steps, total_steps):
-    """LambdaLR: warmup lineal hasta warmup_steps, luego cosine annealing hasta total_steps."""
-    def lr_lambda(step: int):
-        if step < warmup_steps:
-            return float(step) / float(max(1, warmup_steps))
-        progress = float(step - warmup_steps) / float(max(1, total_steps - warmup_steps))
-        return max(0.0, 0.5 * (1.0 + math.cos(math.pi * progress)))
-    return torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
+def build_scheduler(optimizer, cfg, warmup_steps, total_steps,
+                    steps_per_epoch=None):
+    """Construye el scheduler según cfg.SCHEDULER. Todos opera per-batch step.
+
+      - "cosine_warmup" (default): warmup lineal + cosine annealing.
+      - "poly": warmup lineal + decaimiento polinomial (1 - t)^POLY_POWER.
+      - "step": warmup lineal + decay multiplicativo cada STEP_SIZE epochs.
+      - "constant": warmup lineal + LR constante (sin decay).
+    """
+    sched = getattr(cfg, "SCHEDULER", "cosine_warmup").lower()
+
+    if sched == "cosine_warmup":
+        def lr_lambda(step: int):
+            if step < warmup_steps:
+                return float(step) / float(max(1, warmup_steps))
+            progress = float(step - warmup_steps) / float(max(1, total_steps - warmup_steps))
+            return max(0.0, 0.5 * (1.0 + math.cos(math.pi * progress)))
+        return torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
+
+    if sched == "poly":
+        power = getattr(cfg, "POLY_POWER", 0.9)
+        def lr_lambda(step: int):
+            if step < warmup_steps:
+                return float(step) / float(max(1, warmup_steps))
+            progress = float(step - warmup_steps) / float(max(1, total_steps - warmup_steps))
+            return max(0.0, (1.0 - progress) ** power)
+        return torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
+
+    if sched == "step":
+        if steps_per_epoch is None or steps_per_epoch <= 0:
+            raise ValueError("scheduler 'step' requiere steps_per_epoch > 0")
+        step_epochs = getattr(cfg, "STEP_SIZE", 30)
+        gamma       = getattr(cfg, "STEP_GAMMA", 0.1)
+        step_steps  = step_epochs * steps_per_epoch
+        def lr_lambda(step: int):
+            if step < warmup_steps:
+                return float(step) / float(max(1, warmup_steps))
+            decays = (step - warmup_steps) // max(1, step_steps)
+            return gamma ** decays
+        return torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
+
+    if sched == "constant":
+        def lr_lambda(step: int):
+            if step < warmup_steps:
+                return float(step) / float(max(1, warmup_steps))
+            return 1.0
+        return torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
+
+    raise ValueError(f"SCHEDULER desconocido: {cfg.SCHEDULER!r}. "
+                     "Usa: cosine_warmup | poly | step | constant")
 
 
 def registre_iou_per_classe(iou_per_classe, class_names, prefix="val_iou"):
@@ -190,7 +233,9 @@ def principal(args: argparse.Namespace) -> None:
     val_loader   = DataLoader(val_ds,   batch_size=cfg.BATCH_SIZE, shuffle=False, **loader_kwargs)
 
     # ── modelo ───────────────────────────────────────────────────────────────
-    model = UNet(num_classes=cfg.NUM_CLASSES, backbone=cfg.BACKBONE, pretrained=cfg.PRETRAINED).to(device)
+    model = UNet(num_classes=cfg.NUM_CLASSES, backbone=cfg.BACKBONE,
+                 pretrained=cfg.PRETRAINED,
+                 decoder_dropout=getattr(cfg, "DECODER_DROPOUT", 0.0)).to(device)
 
     freeze_map = {
         "layer0": cfg.FREEZE_LAYER0, "layer1": cfg.FREEZE_LAYER1, "layer2": cfg.FREEZE_LAYER2,
@@ -231,6 +276,13 @@ def principal(args: argparse.Namespace) -> None:
         except Exception as e:
             print(f"[main] torch.compile no disponible ({e}); se usa el modelo sin compilar")
 
+    # ── EMA (Exponential Moving Average) de los pesos ────────────────────────
+    use_ema = bool(getattr(cfg, "USE_EMA", False))
+    ema = None
+    if use_ema:
+        ema = EMA(model, decay=getattr(cfg, "EMA_DECAY", 0.9999))
+        print(f"[main] EMA activado (decay = {ema.decay})")
+
     # ── loss + optimizer + scheduler + métricas ──────────────────────────────
     loss_weights = {
         "ce":          cfg.CE_WEIGHT,
@@ -242,13 +294,14 @@ def principal(args: argparse.Namespace) -> None:
     }
     needs_loader_for_auto = (cfg.WEIGHTED_CE_WEIGHT > 0 and cfg.CLASS_WEIGHTS == "auto")
     criterion = SegmentationLoss(
-        weights       = loss_weights,
-        ignore_index  = cfg.IGNORE_INDEX,
-        num_classes   = cfg.NUM_CLASSES,
-        focal_gamma   = cfg.FOCAL_GAMMA,
-        ohem_top_k    = cfg.OHEM_TOP_K,
-        class_weights = cfg.CLASS_WEIGHTS,
-        train_loader  = train_loader if needs_loader_for_auto else None,
+        weights         = loss_weights,
+        ignore_index    = cfg.IGNORE_INDEX,
+        num_classes     = cfg.NUM_CLASSES,
+        focal_gamma     = cfg.FOCAL_GAMMA,
+        ohem_top_k      = cfg.OHEM_TOP_K,
+        class_weights   = cfg.CLASS_WEIGHTS,
+        train_loader    = train_loader if needs_loader_for_auto else None,
+        label_smoothing = getattr(cfg, "LABEL_SMOOTHING", 0.0),
     )
     print(f"[main] {criterion}")
     epochs    = args.epochs if args.epochs is not None else cfg.EPOCHS
@@ -257,9 +310,18 @@ def principal(args: argparse.Namespace) -> None:
     steps_per_epoch = max(1, len(train_loader))
     warmup_steps    = getattr(cfg, "WARMUP_EPOCHS", 0) * steps_per_epoch
     total_steps     = epochs * steps_per_epoch
-    scheduler       = build_warmup_cosine_scheduler(optimizer, warmup_steps, total_steps)
+    scheduler       = build_scheduler(optimizer, cfg, warmup_steps, total_steps,
+                                      steps_per_epoch=steps_per_epoch)
+    print(f"[main] scheduler = {getattr(cfg, 'SCHEDULER', 'cosine_warmup')}  "
+          f"(warmup={getattr(cfg, 'WARMUP_EPOCHS', 0)} ep, total={epochs} ep)")
 
-    metrics     = SegmentationMetrics(num_classes=cfg.NUM_CLASSES, ignore_index=cfg.IGNORE_INDEX)
+    metrics = SegmentationMetrics(
+        num_classes=cfg.NUM_CLASSES,
+        ignore_index=cfg.IGNORE_INDEX,
+        compute_pixel_accuracy=getattr(cfg, "LOG_PIXEL_ACCURACY", False),
+        compute_f1            =getattr(cfg, "LOG_F1_PER_CLASS",   False),
+        compute_boundary_iou  =getattr(cfg, "LOG_BOUNDARY_IOU",   False),
+    )
     class_names = get_classes(cfg.DATASET)
 
     # ── wandb ────────────────────────────────────────────────────────────────
@@ -271,22 +333,32 @@ def principal(args: argparse.Namespace) -> None:
         loss_str = _build_loss_str(loss_weights, cfg.FOCAL_GAMMA, cfg.OHEM_TOP_K, cfg.CLASS_WEIGHTS)
         run_name = "overfit" if args.overfit > 0 else \
                    f"{cfg.DATASET.lower()}-{cfg.BACKBONE}-{cfg.OPTIMIZER}-{freeze_str}-{loss_str}"
-        wandb.init(project="finetuning", name=run_name,
+        wandb.init(project=getattr(cfg, "WANDB_PROJECT", "finetuning"), name=run_name,
                    mode="offline" if args.wandb_offline else "online",
                    config={k: getattr(cfg, k) for k in dir(cfg) if k.isupper()})
-        wandb.watch(model, criterion, log="all", log_freq=50)
+        wandb_log_what = getattr(cfg, "WANDB_LOG_GRADIENTS", "all")
+        wandb.watch(model, criterion,
+                    log=wandb_log_what if wandb_log_what else None,
+                    log_freq=getattr(cfg, "WANDB_LOG_FREQ", 50))
 
     # ── bucle de entrenamiento ───────────────────────────────────────────────
-    ckpt_dir = Path("checkpoints"); ckpt_dir.mkdir(exist_ok=True)
+    ckpt_dir = Path(getattr(cfg, "CKPT_DIR", "checkpoints")); ckpt_dir.mkdir(exist_ok=True)
+    save_every_n = int(getattr(cfg, "SAVE_EVERY_N_EPOCHS", 0) or 0)
     best_miou = 0.0
 
     for epoch in range(epochs):
         train_loss = entrenar_una_epoca(train_model, train_loader, optimizer, criterion, device,
                                         scaler=scaler, scheduler=scheduler, use_amp=use_amp,
                                         channels_last=channels_last, grad_clip_norm=grad_clip_norm,
-                                        epoch=epoch)
+                                        epoch=epoch, ema=ema)
+
+        # Si EMA está activo: validamos con los pesos suavizados y luego restauramos.
+        if ema is not None:
+            ema.apply_shadow(model)
         val_loss, val_metrics = validar(train_model, val_loader, criterion, metrics, device,
                                         use_amp=use_amp, channels_last=channels_last, epoch=epoch)
+        if ema is not None:
+            ema.restore(model)
 
         log = {
             "epoch":       epoch,
@@ -297,6 +369,15 @@ def principal(args: argparse.Namespace) -> None:
             "lr_decoder":  optimizer.param_groups[-1]["lr"],
         }
         log.update(registre_iou_per_classe(val_metrics["IoU_per_class"], class_names))
+        # Métricas extra (solo si están activas en config).
+        if "pixel_accuracy" in val_metrics:
+            log["val_pixel_acc"] = val_metrics["pixel_accuracy"]
+        if "mF1" in val_metrics:
+            log["val_mF1"] = val_metrics["mF1"]
+            log.update(registre_iou_per_classe(val_metrics["F1_per_class"], class_names,
+                                               prefix="val_f1"))
+        if "boundary_mIoU" in val_metrics:
+            log["val_boundary_mIoU"] = val_metrics["boundary_mIoU"]
 
         main_keys = ("epoch", "train_loss", "val_loss", "val_mIoU")
         line = " | ".join(f"{k}={log[k]:.4f}" if isinstance(log[k], float) else f"{k}={log[k]}"
@@ -306,18 +387,24 @@ def principal(args: argparse.Namespace) -> None:
         if use_wandb:
             wandb.log(log)
 
+        # Snapshot del estado a guardar (común al "best" y al "every N").
+        ckpt_state = {
+            "epoch": epoch,
+            "model_state_dict": model.state_dict(),   # `model` sin compilar
+            "mIoU": float(val_metrics["mIoU"]),
+            "config": {k: getattr(cfg, k) for k in dir(cfg) if k.isupper()},
+        }
+
         if val_metrics["mIoU"] > best_miou:
             best_miou = val_metrics["mIoU"]
-            torch.save(
-                {
-                    "epoch": epoch,
-                    "model_state_dict": model.state_dict(),   # `model` sin compilar
-                    "mIoU": best_miou,
-                    "config": {k: getattr(cfg, k) for k in dir(cfg) if k.isupper()},
-                },
-                ckpt_dir / "best.pt",
-            )
+            ckpt_state["mIoU"] = best_miou
+            torch.save(ckpt_state, ckpt_dir / "best.pt")
             print(f"[epoch {epoch:03d}] new best mIoU = {best_miou:.4f} → checkpoint guardado")
+
+        if save_every_n > 0 and (epoch + 1) % save_every_n == 0:
+            snap_path = ckpt_dir / f"epoch_{epoch:03d}.pt"
+            torch.save(ckpt_state, snap_path)
+            print(f"[epoch {epoch:03d}] snapshot periódico → {snap_path}")
 
     print(f"[main] Done. Best mIoU = {best_miou:.4f}")
     if use_wandb:

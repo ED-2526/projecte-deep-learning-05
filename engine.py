@@ -4,7 +4,8 @@ from tqdm.auto import tqdm
 
 def entrenar_una_epoca(model, loader, optimizer, criterion, device,
                        scaler=None, scheduler=None, use_amp=False,
-                       channels_last=False, grad_clip_norm=0.0, epoch=None):
+                       channels_last=False, grad_clip_norm=0.0, epoch=None,
+                       ema=None):
     """
     EXPLICACIÓ SIMPLE: Entrena el model durant un epoch (una passada per totes les dades).
     Per a cada batch:
@@ -12,6 +13,7 @@ def entrenar_una_epoca(model, loader, optimizer, criterion, device,
     2. Calcula la pèrdua en fp32 (la Dice usa smooth=1e-6 que es perd en fp16)
     3. Backward + (opcional) recorte de gradiente + step (amb GradScaler si AMP)
     4. (Opcional) avança el scheduler per batch — necessari per al warmup
+    5. (Opcional) actualitza l'EMA dels pesos del model
     Retorna la pèrdua promitjada de l'epoch.
     """
     model.train()
@@ -45,6 +47,9 @@ def entrenar_una_epoca(model, loader, optimizer, criterion, device,
 
         if scheduler is not None:
             scheduler.step()   # per-batch step (warmup + cosine annealing)
+
+        if ema is not None:
+            ema.update(model)
 
         total_loss += loss.item()
         pbar.set_postfix(loss=f"{loss.item():.4f}")
