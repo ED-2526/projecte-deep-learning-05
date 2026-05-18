@@ -120,7 +120,9 @@ class Config:
     # — Estabilidad / regularización —
     GRAD_CLIP_NORM   = 1.0          # ✅ recorte de gradiente
     GRAD_ACCUM_STEPS = 1            # 🔧 acumulación de gradientes (1 = sin acumular)
-    LABEL_SMOOTHING  = 0.0          # ✅ suaviza targets one-hot (0.0–0.1 típico)
+    LABEL_SMOOTHING  = 0.0          # ✅ suaviza targets one-hot (0.0–0.1 típico). Aplica a
+                                    #    CE / OHEM-CE / Weighted-CE / Focal. Dice no lo usa
+                                    #    (opera sobre probs, no sobre one-hot).
 
     # — Promedios de pesos —
     USE_EMA          = False        # ✅ Exponential Moving Average de los pesos

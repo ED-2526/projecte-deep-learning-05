@@ -27,6 +27,7 @@ i es trien les millors. És determinista (--seed).
     python evaluate.py --ckpt checkpoints/best.pt --data-root /home/datasets/coco --no-figure
 """
 import argparse
+import os
 import random
 from pathlib import Path
 
@@ -285,23 +286,36 @@ def principal(args):
     if not args.no_metrics:
         val_loader = DataLoader(val_ds, batch_size=cfg.BATCH_SIZE, shuffle=False,
                                 num_workers=cfg.NUM_WORKERS, pin_memory=True)
+        # La loss de val se construye con la config guardada en el checkpoint para que
+        # `val_loss` coincida con la del entrenamiento; si el checkpoint no la trae,
+        # se cae al config.py actual.
+        def _from_saved(key, default):
+            return saved_cfg.get(key, getattr(cfg, key, default))
         loss_weights = {
-            "ce":          getattr(cfg, "CE_WEIGHT",          0.0),
-            "dice":        getattr(cfg, "DICE_WEIGHT",        0.5),
-            "focal":       getattr(cfg, "FOCAL_WEIGHT",       0.5),
-            "lovasz":      getattr(cfg, "LOVASZ_WEIGHT",      0.0),
-            "ohem_ce":     getattr(cfg, "OHEM_CE_WEIGHT",     0.0),
-            "weighted_ce": getattr(cfg, "WEIGHTED_CE_WEIGHT", 0.0),
+            "ce":          _from_saved("CE_WEIGHT",          0.0),
+            "dice":        _from_saved("DICE_WEIGHT",        0.5),
+            "focal":       _from_saved("FOCAL_WEIGHT",       0.5),
+            "lovasz":      _from_saved("LOVASZ_WEIGHT",      0.0),
+            "ohem_ce":     _from_saved("OHEM_CE_WEIGHT",     0.0),
+            "weighted_ce": _from_saved("WEIGHTED_CE_WEIGHT", 0.0),
         }
-        # Si CLASS_WEIGHTS == "auto" se intenta cargar del cache de un entreno previo
-        # (no se calcula aquí porque no hay train_loader).
+        # Si CLASS_WEIGHTS == "auto" y no hay cache en disco, caemos a None para no
+        # crashear evaluate.py (la val_loss no será 100% comparable, pero el mIoU sí).
+        cw = _from_saved("CLASS_WEIGHTS", None)
+        if isinstance(cw, str) and cw.lower() == "auto":
+            cache = os.path.join("checkpoints", f"class_weights_auto_{num_classes}cls.pt")
+            if not os.path.isfile(cache):
+                print(f"[evaluate] CLASS_WEIGHTS='auto' sin cache en {cache} → se usa None "
+                      "para no abortar la evaluación.")
+                cw = None
         criterion = SegmentationLoss(
             weights       = loss_weights,
-            ignore_index  = cfg.IGNORE_INDEX,
+            ignore_index  = _from_saved("IGNORE_INDEX", 255),
             num_classes   = num_classes,
-            focal_gamma   = getattr(cfg, "FOCAL_GAMMA", 2.0),
-            ohem_top_k    = getattr(cfg, "OHEM_TOP_K", 0.25),
-            class_weights = getattr(cfg, "CLASS_WEIGHTS", None),
+            focal_gamma   = _from_saved("FOCAL_GAMMA", 2.0),
+            ohem_top_k    = _from_saved("OHEM_TOP_K", 0.25),
+            class_weights = cw,
+            label_smoothing=_from_saved("LABEL_SMOOTHING", 0.0),
         )
         metrics = SegmentationMetrics(
             num_classes=num_classes, ignore_index=cfg.IGNORE_INDEX,

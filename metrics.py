@@ -68,6 +68,8 @@ class SegmentationMetrics:
         """Acumula la confusion matrix solo en píxeles del borde de cada clase."""
         # Borde = píxel cuya clase difiere de algún vecino en una ventana NxN.
         # Lo aproximamos comparando target con max-pool y -min-pool (1-px borde).
+        # Para no inflar el borde alrededor de regiones ignoradas, descartamos
+        # las posiciones cuya ventana toca cualquier píxel ignorado.
         import torch.nn.functional as F
 
         k = self.boundary_kernel
@@ -79,7 +81,12 @@ class SegmentationMetrics:
         # max-pool y -(-)min-pool sobre target → cualquier diferencia local marca borde
         t_max = F.max_pool2d(t_f, kernel_size=k, stride=1, padding=pad)
         t_min = -F.max_pool2d(-t_f, kernel_size=k, stride=1, padding=pad)
-        boundary = ((t_max - t_min).squeeze(1) != 0) & valid_mask
+        # min-pool de valid_mask: =1 solo si TODA la ventana es válida; descarta
+        # los bordes falsos junto a píxeles ignorados (que se rellenaron con 0).
+        vm_f         = valid_mask.float().unsqueeze(1)
+        valid_window = -F.max_pool2d(-vm_f, kernel_size=k, stride=1, padding=pad)
+        boundary = (((t_max - t_min).squeeze(1) != 0) & valid_mask
+                    & (valid_window.squeeze(1) > 0.5))
 
         if boundary.sum() == 0:
             return

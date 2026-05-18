@@ -331,9 +331,13 @@ def principal(args: argparse.Namespace) -> None:
         frozen_layers = [f"L{i}" for i, f in enumerate(freeze_map.values()) if f]
         freeze_str = f"freeze({'_'.join(frozen_layers)})" if frozen_layers else "nofrozen"
         loss_str = _build_loss_str(loss_weights, cfg.FOCAL_GAMMA, cfg.OHEM_TOP_K, cfg.CLASS_WEIGHTS)
-        run_name = "overfit" if args.overfit > 0 else \
-                   f"{cfg.DATASET.lower()}-{cfg.BACKBONE}-{cfg.OPTIMIZER}-{freeze_str}-{loss_str}"
-        wandb.init(project=getattr(cfg, "WANDB_PROJECT", "finetuning"), name=run_name,
+        # Run name: --wandb-run-name lo sobreescribe TODO; si no, se construye automático.
+        auto_run_name = "overfit" if args.overfit > 0 else \
+                        f"{cfg.DATASET.lower()}-{cfg.BACKBONE}-{cfg.OPTIMIZER}-{freeze_str}-{loss_str}"
+        run_name = getattr(args, "wandb_run_name", None) or auto_run_name
+        # Project: --wandb-project sobreescribe Config.WANDB_PROJECT.
+        project = getattr(args, "wandb_project", None) or getattr(cfg, "WANDB_PROJECT", "finetuning")
+        wandb.init(project=project, name=run_name,
                    mode="offline" if args.wandb_offline else "online",
                    config={k: getattr(cfg, k) for k in dir(cfg) if k.isupper()})
         wandb_log_what = getattr(cfg, "WANDB_LOG_GRADIENTS", "all")
@@ -388,9 +392,18 @@ def principal(args: argparse.Namespace) -> None:
             wandb.log(log)
 
         # Snapshot del estado a guardar (común al "best" y al "every N").
+        # Si EMA está activo: el mIoU se ha medido con los pesos suavizados, así
+        # que guardamos esos mismos pesos en el checkpoint (apply_shadow temporalmente
+        # y luego restore). Si no, guardamos el state_dict normal.
+        if ema is not None:
+            ema.apply_shadow(model)
+            ckpt_model_sd = {k: v.detach().clone() for k, v in model.state_dict().items()}
+            ema.restore(model)
+        else:
+            ckpt_model_sd = model.state_dict()
         ckpt_state = {
             "epoch": epoch,
-            "model_state_dict": model.state_dict(),   # `model` sin compilar
+            "model_state_dict": ckpt_model_sd,        # pesos EMA si EMA activo, raw si no
             "mIoU": float(val_metrics["mIoU"]),
             "config": {k: getattr(cfg, k) for k in dir(cfg) if k.isupper()},
         }
@@ -424,6 +437,10 @@ def analitzar_arguments() -> argparse.Namespace:
                    help="Si >0, entrena/valida sobre las primeras N imágenes (sanity check)")
     p.add_argument("--no-wandb", action="store_true", help="Desactiva Wandb")
     p.add_argument("--wandb-offline", action="store_true", help="Wandb en modo offline")
+    p.add_argument("--wandb-project", type=str, default=None,
+                   help="Nombre del proyecto en Wandb (override de Config.WANDB_PROJECT)")
+    p.add_argument("--wandb-run-name", type=str, default=None,
+                   help="Nombre del run en Wandb (override del nombre autogenerado)")
 
     # ── pesos de la loss combinada (todos default None → usa el valor de cfg) ─
     g = p.add_argument_group("loss combinada (override de config.py si != None)")

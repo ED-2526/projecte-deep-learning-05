@@ -93,21 +93,29 @@ class DiceLoss(nn.Module):
 
 class FocalLoss(nn.Module):
     """
-    Focal Loss numéricamente estable.
+    Focal Loss numéricamente estable, con label_smoothing opcional.
 
     Parte de la CE píxel a píxel y la multiplica por ``(1 − p_t)^gamma``, lo
     que reduce el peso de los píxeles ya bien clasificados → se enfoca en los
     difíciles. ``gamma = 0`` lo reduce a CE. Promedia sobre píxeles válidos.
+
+    Con ``label_smoothing > 0`` se usa la CE suavizada como base
+    (``F.cross_entropy(..., label_smoothing=ls, reduction='none')``) y
+    ``pt = exp(-ce_smooth)`` — es la convención habitual en implementaciones
+    de referencia de Focal+LS, no exactamente p_t pero suficientemente cercano.
     """
-    def __init__(self, gamma: float = 2.0, ignore_index: int = 255):
+    def __init__(self, gamma: float = 2.0, ignore_index: int = 255,
+                 label_smoothing: float = 0.0):
         super().__init__()
         self.gamma = gamma
         self.ignore_index = ignore_index
+        self.label_smoothing = label_smoothing
 
     def forward(self, logits: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
         targets = targets.long()
-        ce = F.cross_entropy(logits, targets, ignore_index=self.ignore_index, reduction="none")
-        pt = torch.exp(-ce)                       # p_t de la clase correcta
+        ce = F.cross_entropy(logits, targets, ignore_index=self.ignore_index,
+                             label_smoothing=self.label_smoothing, reduction="none")
+        pt = torch.exp(-ce)                       # p_t de la clase correcta (aprox. si hay smoothing)
         focal = (1.0 - pt) ** self.gamma * ce
         valid = (targets != self.ignore_index)
         n = valid.sum().clamp(min=1)
@@ -317,7 +325,8 @@ class SegmentationLoss(nn.Module):
         if "dice" in active:
             self.losses["dice"] = DiceLoss(ignore_index=ignore_index)
         if "focal" in active:
-            self.losses["focal"] = FocalLoss(gamma=focal_gamma, ignore_index=ignore_index)
+            self.losses["focal"] = FocalLoss(gamma=focal_gamma, ignore_index=ignore_index,
+                                             label_smoothing=label_smoothing)
         if "lovasz" in active:
             self.losses["lovasz"] = LovaszSoftmax(ignore_index=ignore_index)
         if "ohem_ce" in active:
@@ -471,8 +480,28 @@ if __name__ == "__main__":
     else:
         raise AssertionError("esperaba ValueError con clave inválida")
 
-    # 5) Combinada con varias activas — comprueba que es la suma de las partes
-    print("\n[5] Combinada ≈ suma ponderada de las partes (focal 0.5 + dice 0.5):")
+    # 5) label_smoothing: CE con smoothing coincide con nn.CrossEntropyLoss(label_smoothing=...)
+    print("\n[5] label_smoothing en CE coincide con nn.CrossEntropyLoss(label_smoothing=0.1):")
+    crit_ls = SegmentationLoss(weights={"ce": 1.0}, ignore_index=255, num_classes=NC,
+                               label_smoothing=0.1)
+    got_ls  = crit_ls(logits, masks)
+    ref_ls  = nn.CrossEntropyLoss(ignore_index=255, label_smoothing=0.1)(logits, masks.long())
+    diff    = (got_ls - ref_ls).abs().item()
+    assert torch.allclose(got_ls, ref_ls, atol=1e-6), f"diff demasiado grande: {diff}"
+    print(f"    got = {got_ls.item():.6f}   ref = {ref_ls.item():.6f}   |Δ| = {diff:.2e}   OK")
+    # y que con focal+ls la loss cambia (deja de ser la misma que sin smoothing)
+    crit_f_nols = SegmentationLoss(weights={"focal": 1.0}, ignore_index=255, num_classes=NC,
+                                   focal_gamma=2.0)
+    crit_f_ls   = SegmentationLoss(weights={"focal": 1.0}, ignore_index=255, num_classes=NC,
+                                   focal_gamma=2.0, label_smoothing=0.1)
+    f_nols = crit_f_nols(logits, masks)
+    f_ls   = crit_f_ls(logits, masks)
+    assert not torch.allclose(f_nols, f_ls, atol=1e-4), \
+        f"focal con label_smoothing=0.1 debería diferir del focal sin smoothing"
+    print(f"    focal sin LS = {f_nols.item():.4f}  con LS=0.1 = {f_ls.item():.4f}   OK (varían)")
+
+    # 6) Combinada con varias activas — comprueba que es la suma de las partes
+    print("\n[6] Combinada ≈ suma ponderada de las partes (focal 0.5 + dice 0.5):")
     crit_comb = SegmentationLoss(weights={"focal": 0.5, "dice": 0.5},
                                  ignore_index=255, num_classes=NC, focal_gamma=2.0)
     f_alone = SegmentationLoss(weights={"focal": 1.0},
