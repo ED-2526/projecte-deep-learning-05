@@ -16,7 +16,7 @@ from models import build_model
 from losses import SegmentationLoss
 from metrics import SegmentationMetrics
 from transforms import PairedTransform
-from main import construir_optimitzador, build_warmup_cosine_scheduler
+from main import construir_optimitzador, build_scheduler
 
 print("=" * 70)
 print("QUICK TEST — validando el pipeline (sin dataset)")
@@ -93,7 +93,7 @@ print(f"    OK — loss = {loss.item():.4f}")
 # 4) optimizer + scheduler warmup
 print("\n[4] optimizer + scheduler...")
 optimizer = construir_optimitzador(model, cfg)
-scheduler = build_warmup_cosine_scheduler(optimizer, warmup_steps=10, total_steps=100)
+scheduler = build_scheduler(optimizer, cfg, warmup_steps=10, total_steps=100, steps_per_epoch=10)
 print(f"    OK — LR inicial dec={optimizer.param_groups[-1]['lr']:.2e}")
 for _ in range(5):
     scheduler.step()
