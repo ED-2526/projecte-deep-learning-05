@@ -85,9 +85,15 @@ class Config:
     FREEZE_LAYER4 = True           # ✅ cuarto bloque (ídem)
 
     # — Decoder —
-    DECODER_TYPE              = "unet"        # 🔧 "unet" (actual) | "deeplabv3plus" | "fpn"
+    DECODER_TYPE              = "deeplabv3plus"  # ✅ "unet" | "deeplabv3plus"  (rama: probamos DeepLab)
     DECODER_USE_BILINEAR_UP   = False         # 🔧 False=ConvTranspose2d (actual), True=bilinear+conv
-    DECODER_DROPOUT           = 0.0           # ✅ dropout 2D al final de cada DecoderBlock
+    DECODER_DROPOUT           = 0.0           # ✅ dropout 2D al final del decoder (UNet y DeepLab)
+
+    # — DeepLabV3+ específico (solo se leen si DECODER_TYPE == "deeplabv3plus") —
+    DEEPLAB_OUTPUT_STRIDE  = 16     # ✅ 16 (default, recomendado) | 8 (más VRAM, ~+1pp mIoU)
+    DEEPLAB_ASPP_OUT       = 256    # ✅ canales de salida del módulo ASPP (256 estándar)
+    DEEPLAB_DECODER_LOW_CH = 48     # ✅ canales de proyección de las low-level features (48 estándar)
+    DEEPLAB_ASPP_DROPOUT   = 0.1    # ✅ dropout dentro del módulo ASPP
 
     # — Módulos extra del modelo —
     USE_ATTENTION_GATES = False    # 🔧 Attention gates en skip connections (Attention U-Net)

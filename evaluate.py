@@ -44,7 +44,7 @@ from engine import validar
 from losses import SegmentationLoss
 from main import construir_dataset
 from metrics import SegmentationMetrics
-from models.unet import UNet
+from models.unet import UNet  # noqa: F401  (mantenido por compatibilidad; build_model en principal)
 from transforms import PairedTransform
 
 
@@ -261,16 +261,29 @@ def principal(args):
     backbone     = saved_cfg.get("BACKBONE",    cfg.BACKBONE)
     num_classes  = saved_cfg.get("NUM_CLASSES", cfg.NUM_CLASSES)
     dataset_name = saved_cfg.get("DATASET",     cfg.DATASET)
-    print(f"[evaluate] device = {device}  |  dataset = {dataset_name}  |  "
-          f"backbone = {backbone}  |  num_classes = {num_classes}")
-    if (backbone, num_classes) != (cfg.BACKBONE, cfg.NUM_CLASSES):
+    decoder_type = saved_cfg.get("DECODER_TYPE", getattr(cfg, "DECODER_TYPE", "unet"))
+    print(f"[evaluate] device = {device}  |  arch = {decoder_type}  |  "
+          f"dataset = {dataset_name}  |  backbone = {backbone}  |  num_classes = {num_classes}")
+    if (backbone, num_classes, decoder_type) != \
+       (cfg.BACKBONE, cfg.NUM_CLASSES, getattr(cfg, "DECODER_TYPE", "unet")):
         print(f"[evaluate] (config.py actual diu backbone={cfg.BACKBONE}, "
-              f"num_classes={cfg.NUM_CLASSES}; faig servir els valors del checkpoint)")
+              f"num_classes={cfg.NUM_CLASSES}, decoder={getattr(cfg, 'DECODER_TYPE', 'unet')}; "
+              "faig servir els valors del checkpoint)")
 
     val_ds = construir_dataset(cfg, args.data_root, "val")
 
-    model = UNet(num_classes=num_classes, backbone=backbone, pretrained=False,
-                 decoder_dropout=getattr(cfg, "DECODER_DROPOUT", 0.0)).to(device)
+    # Reconstruimos el modelo según la arquitectura guardada en el checkpoint.
+    # Sobreescribimos los atributos relevantes del cfg para que build_model los lea.
+    cfg.DECODER_TYPE = decoder_type
+    cfg.BACKBONE     = backbone
+    cfg.PRETRAINED   = False                  # cargaremos del checkpoint, no hace falta ImageNet
+    # propaga también los hiperparámetros específicos de DeepLab si están guardados
+    for k in ("DEEPLAB_OUTPUT_STRIDE", "DEEPLAB_ASPP_OUT", "DEEPLAB_DECODER_LOW_CH",
+              "DEEPLAB_ASPP_DROPOUT", "DECODER_DROPOUT"):
+        if k in saved_cfg:
+            setattr(cfg, k, saved_cfg[k])
+    from models import build_model
+    model = build_model(num_classes=num_classes, cfg=cfg).to(device)
     model.load_state_dict(state_dict)
     model.eval()
 

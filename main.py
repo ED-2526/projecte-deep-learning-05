@@ -18,7 +18,7 @@ from ema import EMA
 from engine import entrenar_una_epoca, validar
 from losses import SegmentationLoss
 from metrics import SegmentationMetrics
-from models.unet import UNet
+from models import build_model
 from transforms import PairedTransform
 
 
@@ -61,8 +61,10 @@ def construir_dataset(cfg: Config, root: str, split: str):
     raise ValueError(f"DATASET desconocido: {cfg.DATASET!r}. Usa 'VOC' o 'COCO'.")
 
 
-def construir_optimitzador(model: UNet, cfg: Config) -> torch.optim.Optimizer:
-    """Crea el optimizer con learning rates separados para encoder (bajo) y decoder (alto)."""
+def construir_optimitzador(model: torch.nn.Module, cfg: Config) -> torch.optim.Optimizer:
+    """Crea el optimizer con learning rates separados para encoder (bajo) y decoder (alto).
+    Vale tanto para UNet como para DeepLabV3+ (ambos tienen `model.encoder`; el resto
+    de parámetros — decoder/aspp/head — son los del 'decoder' a efectos de LR)."""
     encoder_params = [p for p in model.encoder.parameters() if p.requires_grad]
     decoder_params = [p for n, p in model.named_parameters()
                       if not n.startswith("encoder.") and p.requires_grad]
@@ -233,9 +235,9 @@ def principal(args: argparse.Namespace) -> None:
     val_loader   = DataLoader(val_ds,   batch_size=cfg.BATCH_SIZE, shuffle=False, **loader_kwargs)
 
     # ── modelo ───────────────────────────────────────────────────────────────
-    model = UNet(num_classes=cfg.NUM_CLASSES, backbone=cfg.BACKBONE,
-                 pretrained=cfg.PRETRAINED,
-                 decoder_dropout=getattr(cfg, "DECODER_DROPOUT", 0.0)).to(device)
+    model = build_model(num_classes=cfg.NUM_CLASSES, cfg=cfg).to(device)
+    arch  = str(getattr(cfg, "DECODER_TYPE", "unet")).lower()
+    print(f"[main] arquitectura: {arch}  |  backbone: {cfg.BACKBONE}")
 
     freeze_map = {
         "layer0": cfg.FREEZE_LAYER0, "layer1": cfg.FREEZE_LAYER1, "layer2": cfg.FREEZE_LAYER2,
@@ -252,7 +254,7 @@ def principal(args: argparse.Namespace) -> None:
 
     n_params    = sum(p.numel() for p in model.parameters())
     n_trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)
-    print(f"[main] U-Net params: {n_params/1e6:.2f}M total | {n_trainable/1e6:.2f}M entrenables")
+    print(f"[main] {arch} params: {n_params/1e6:.2f}M total | {n_trainable/1e6:.2f}M entrenables")
 
     # ── optimizaciones de velocidad (solo en GPU) ────────────────────────────
     use_amp        = getattr(cfg, "USE_AMP", False) and device.type == "cuda"
@@ -331,9 +333,11 @@ def principal(args: argparse.Namespace) -> None:
         frozen_layers = [f"L{i}" for i, f in enumerate(freeze_map.values()) if f]
         freeze_str = f"freeze({'_'.join(frozen_layers)})" if frozen_layers else "nofrozen"
         loss_str = _build_loss_str(loss_weights, cfg.FOCAL_GAMMA, cfg.OHEM_TOP_K, cfg.CLASS_WEIGHTS)
-        # Run name: --wandb-run-name lo sobreescribe TODO; si no, se construye automático.
+        # Run name: --wandb-run-name lo sobreescribe TODO; si no, se construye automático
+        # con la arquitectura al principio para distinguir unet vs deeplabv3+ en el dashboard.
+        arch_short = str(getattr(cfg, "DECODER_TYPE", "unet")).lower().replace("deeplabv3plus", "dlv3p")
         auto_run_name = "overfit" if args.overfit > 0 else \
-                        f"{cfg.DATASET.lower()}-{cfg.BACKBONE}-{cfg.OPTIMIZER}-{freeze_str}-{loss_str}"
+                        f"{arch_short}-{cfg.DATASET.lower()}-{cfg.BACKBONE}-{cfg.OPTIMIZER}-{freeze_str}-{loss_str}"
         run_name = getattr(args, "wandb_run_name", None) or auto_run_name
         # Project: --wandb-project sobreescribe Config.WANDB_PROJECT.
         project = getattr(args, "wandb_project", None) or getattr(cfg, "WANDB_PROJECT", "finetuning")

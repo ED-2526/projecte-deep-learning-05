@@ -12,7 +12,7 @@ os.environ.setdefault("TORCH_HOME", r"C:\torch_cache")
 import torch
 
 from config import Config
-from models.unet import UNet
+from models import build_model
 from losses import SegmentationLoss
 from metrics import SegmentationMetrics
 from transforms import PairedTransform
@@ -26,16 +26,32 @@ cfg     = Config()
 device  = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 C, H, W = cfg.NUM_CLASSES, 256, 256
 B       = 2
-print(f"device={device} | backbone={cfg.BACKBONE} | num_classes={C} | optimizer={cfg.OPTIMIZER}")
+arch    = getattr(cfg, "DECODER_TYPE", "unet")
+print(f"device={device} | arch={arch} | backbone={cfg.BACKBONE} | num_classes={C} | optimizer={cfg.OPTIMIZER}")
 
-# 1) modelo + forward
-print("\n[1] modelo + forward...")
-model = UNet(num_classes=C, backbone=cfg.BACKBONE, pretrained=False).to(device)
+# 1) modelo + forward (usa build_model: respeta cfg.DECODER_TYPE → unet o deeplabv3plus)
+print(f"\n[1] modelo ({arch}) + forward...")
+# en quick_test no descargamos pesos preentrenados para que sea rápido y offline-friendly
+cfg.PRETRAINED = False
+model = build_model(num_classes=C, cfg=cfg).to(device)
 x = torch.randn(B, 3, H, W, device=device)
 with torch.no_grad():
     y = model(x)
 assert y.shape == (B, C, H, W), f"shape inesperada: {y.shape}"
 print(f"    OK — salida {tuple(y.shape)}")
+
+# 1b) sanity check de la OTRA arquitectura (solo forward, sin pesos)
+other_arch = "unet" if arch != "unet" else "deeplabv3plus"
+print(f"\n[1b] forward también de la otra arquitectura ({other_arch})...")
+cfg_other = Config()
+cfg_other.DECODER_TYPE = other_arch
+cfg_other.PRETRAINED   = False
+m_other = build_model(num_classes=C, cfg=cfg_other).to(device)
+with torch.no_grad():
+    y_other = m_other(x)
+assert y_other.shape == (B, C, H, W), f"shape inesperada ({other_arch}): {y_other.shape}"
+del m_other
+print(f"    OK — salida {tuple(y_other.shape)}")
 
 # 2) freeze por capas
 print("\n[2] congelación por capas...")
