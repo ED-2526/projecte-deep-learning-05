@@ -78,11 +78,11 @@ class Config:
     PRETRAINED = True              # ✅ pesos ImageNet
 
     # Congelación capa a capa del encoder (True = congelada).
-    FREEZE_LAYER0 = True           # ✅ conv inicial + maxpool
-    FREEZE_LAYER1 = True           # ✅ primer bloque ResNet
-    FREEZE_LAYER2 = True           # ✅ segundo bloque ResNet
-    FREEZE_LAYER3 = True           # ✅ tercer bloque (descongelar para fine-tune semántico)
-    FREEZE_LAYER4 = True           # ✅ cuarto bloque (ídem)
+    FREEZE_LAYER0 = True           # ✅ conv inicial + maxpool (bordes — congelada)
+    FREEZE_LAYER1 = True           # ✅ primer bloque ResNet (texturas — congelada)
+    FREEZE_LAYER2 = False          # ✅ segundo bloque (formas — ENTRENABLE)
+    FREEZE_LAYER3 = False          # ✅ tercer bloque (partes — ENTRENABLE)
+    FREEZE_LAYER4 = False          # ✅ cuarto bloque (semántico — ENTRENABLE; mejor mIoU empírico)
 
     # — Decoder —
     DECODER_TYPE              = "unet"        # 🔧 "unet" (actual) | "deeplabv3plus" | "fpn"
