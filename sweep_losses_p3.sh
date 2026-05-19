@@ -22,6 +22,7 @@ set -u
 DATA="${DATA:-/home/datasets/coco}"
 EPOCHS="${EPOCHS:-30}"
 PROJECT="${PROJECT:-Losses}"
+VM_TAG="${VM_TAG:-p3}"   # subcarpeta para no colisionar con otras VM por NFS
 COMMON="--data-root $DATA --epochs $EPOCHS --wandb-project $PROJECT"
 
 mkdir -p logs
@@ -53,13 +54,15 @@ run_combo() {
         fi
     done
     name="${name%_}"
-    local logfile="logs/${name}.log"
+    local logfile="logs/${VM_TAG}_${name}.log"
+    local ckpt="checkpoints/${VM_TAG}/${name}"
     echo ""
     echo "════════════════════════════════════════════════════════════"
     echo "▶ $(date +%H:%M:%S)  $name"
-    echo "  log: $logfile"
+    echo "  log:  $logfile"
+    echo "  ckpt: $ckpt"
     echo "════════════════════════════════════════════════════════════"
-    python main.py $COMMON --wandb-run-name "$name" $args 2>&1 | tee "$logfile"
+    python main.py $COMMON --wandb-run-name "$name" --ckpt-dir "$ckpt" $args 2>&1 | tee "$logfile"
     local rc=${PIPESTATUS[0]}
     if [ "$rc" -ne 0 ]; then
         echo "[!] $name terminó con código $rc (continúo con el siguiente)"

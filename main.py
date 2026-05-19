@@ -346,7 +346,8 @@ def principal(args: argparse.Namespace) -> None:
                     log_freq=getattr(cfg, "WANDB_LOG_FREQ", 50))
 
     # ── bucle de entrenamiento ───────────────────────────────────────────────
-    ckpt_dir = Path(getattr(cfg, "CKPT_DIR", "checkpoints")); ckpt_dir.mkdir(exist_ok=True)
+    ckpt_dir = Path(args.ckpt_dir if args.ckpt_dir else getattr(cfg, "CKPT_DIR", "checkpoints"))
+    ckpt_dir.mkdir(parents=True, exist_ok=True)
     save_every_n = int(getattr(cfg, "SAVE_EVERY_N_EPOCHS", 0) or 0)
     best_miou = 0.0
 
@@ -441,6 +442,10 @@ def analitzar_arguments() -> argparse.Namespace:
                    help="Nombre del proyecto en Wandb (override de Config.WANDB_PROJECT)")
     p.add_argument("--wandb-run-name", type=str, default=None,
                    help="Nombre del run en Wandb (override del nombre autogenerado)")
+    p.add_argument("--ckpt-dir", type=str, default=None,
+                   help="Carpeta donde guardar checkpoints (override de Config.CKPT_DIR). "
+                        "Útil cuando varias VM comparten $HOME por NFS y queremos evitar "
+                        "que un sweep pise el best.pt de otro.")
 
     # ── pesos de la loss combinada (todos default None → usa el valor de cfg) ─
     g = p.add_argument_group("loss combinada (override de config.py si != None)")
